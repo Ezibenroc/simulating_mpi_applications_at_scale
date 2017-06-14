@@ -1,0 +1,12 @@
+*~
+\#*
+journal.html
+*.aux
+*.bbl
+*.blg
+*.log
+*.toc
+*.out
+*~
+_minted-report
+*.pyg

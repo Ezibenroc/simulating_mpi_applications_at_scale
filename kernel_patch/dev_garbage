@@ -1,0 +1,134 @@
+--- a/drivers/char/mem.c
++++ b/drivers/char/mem.c
+@@ -296,6 +296,11 @@ static unsigned zero_mmap_capabilities(s
+ 	return NOMMU_MAP_COPY;
+ }
+ 
++static unsigned garbage_mmap_capabilities(struct file *file)
++{
++	return NOMMU_MAP_COPY | NOMMU_MAP_DIRECT;
++}
++
+ /* can't do an in-place private mapping if there's no MMU */
+ static inline int private_mapping_ok(struct vm_area_struct *vma)
+ {
+@@ -738,10 +743,74 @@ static int open_port(struct inode *inode
+ 	return capable(CAP_SYS_RAWIO) ? 0 : -EPERM;
+ }
+ 
++static ssize_t read_iter_garbage(struct kiocb *iocb, struct iov_iter *iter)
++{
++	size_t written = 0;
++
++	while (iov_iter_count(iter)) {
++		written += iov_iter_count(iter);
++	}
++	return written;
++}
++
++static int garbage_fault(struct vm_area_struct *vma, struct vm_fault *vmf)
++{
++	struct page *page = vma->vm_file->private_data;
++	vmf->page = page;
++	return 0;
++}
++
++const struct vm_operations_struct mmap_garbage_ops = {
++	.fault	 	= garbage_fault,
++	.map_pages	= filemap_map_pages,
++};
++
++static int mmap_garbage(struct file *file, struct vm_area_struct *vma)
++{
++#ifndef CONFIG_MMU
++	return -ENOSYS;
++#endif
++	if (vma->vm_file)
++		fput(vma->vm_file);
++	vma->vm_file = get_file(file);
++	vma->vm_ops = &mmap_garbage_ops;
++	return 0;
++}
++
++static unsigned long get_unmapped_area_garbage(struct file *file,
++				unsigned long addr, unsigned long len,
++				unsigned long pgoff, unsigned long flags)
++{
++#ifdef CONFIG_MMU
++	return current->mm->get_unmapped_area(file, addr, len, pgoff, flags);
++#else
++	return -ENOSYS;
++#endif
++}
++
++static int open_garbage(struct inode *inode, struct file *file)
++{
++	struct page *page = alloc_page(__GFP_ZERO);
++	if (!page)
++		return -ENOMEM;
++	file->private_data = page;
++	return 0;
++}
++
++static int release_garbage(struct inode *inode, struct file *file)
++{
++	struct page *page = file->private_data;
++	__free_page(page);
++	return 0;
++}
++
+ #define zero_lseek	null_lseek
+ #define full_lseek      null_lseek
++#define garbage_lseek   null_lseek
+ #define write_zero	write_null
++#define write_garbage	write_null
+ #define write_iter_zero	write_iter_null
++#define write_iter_garbage	write_iter_null
+ #define open_mem	open_port
+ #define open_kmem	open_mem
+ 
+@@ -803,6 +872,20 @@ static const struct file_operations full
+ 	.write		= write_full,
+ };
+ 
++static const struct file_operations garbage_fops = {
++	.llseek		= garbage_lseek,
++	.write		= write_garbage,
++	.read_iter	= read_iter_garbage,
++	.write_iter	= write_iter_garbage,
++	.mmap		= mmap_garbage,
++	.open		= open_garbage,
++	.release	= release_garbage,
++	.get_unmapped_area = get_unmapped_area_garbage,
++#ifndef CONFIG_MMU
++	.mmap_capabilities = garbage_mmap_capabilities,
++#endif
++};
++
+ static const struct memdev {
+ 	const char *name;
+ 	umode_t mode;
+@@ -826,6 +909,7 @@ static const struct memdev {
+ #ifdef CONFIG_PRINTK
+ 	[11] = { "kmsg", 0644, &kmsg_fops, 0 },
+ #endif
++	[12] = { "garbage", 0666, &garbage_fops, 0 },
+ };
+ 
+ static int memory_open(struct inode *inode, struct file *filp)
+--- a/mm/gup.c
++++ b/mm/gup.c
+@@ -1028,7 +1028,12 @@ long populate_vma_page_range(struct vm_a
+ 	 * to break COW, except for shared mappings because these don't COW
+ 	 * and we would not want to dirty them for nothing.
+ 	 */
+-	if ((vma->vm_flags & (VM_WRITE | VM_SHARED)) == VM_WRITE)
++	extern const struct vm_operations_struct mmap_garbage_ops;
++	vm_flags_t check_shared = VM_SHARED;
++	if (vma->vm_ops == &mmap_garbage_ops)
++		/* This will go to the bin anyway */
++		check_shared = 0;
++	if ((vma->vm_flags & (VM_WRITE | check_shared)) == VM_WRITE)
+ 		gup_flags |= FOLL_WRITE;
+ 
+ 	/*

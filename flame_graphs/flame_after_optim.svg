@@ -1,0 +1,1791 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1200" height="626" onload="init(evt)" viewBox="0 0 1200 626" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<!-- Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples. -->
+<defs >
+	<linearGradient id="background" y1="0" y2="1" x1="0" x2="0" >
+		<stop stop-color="#eeeeee" offset="5%" />
+		<stop stop-color="#eeeeb0" offset="95%" />
+	</linearGradient>
+</defs>
+<style type="text/css">
+	.func_g:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+</style>
+<script type="text/ecmascript">
+<![CDATA[
+	var details, searchbtn, matchedtxt, svg;
+	function init(evt) {
+		details = document.getElementById("details").firstChild;
+		searchbtn = document.getElementById("search");
+		matchedtxt = document.getElementById("matched");
+		svg = document.getElementsByTagName("svg")[0];
+		searching = 0;
+	}
+
+	// mouse-over for info
+	function s(node) {		// show
+		info = g_to_text(node);
+		details.nodeValue = "Function: " + info;
+	}
+	function c() {			// clear
+		details.nodeValue = ' ';
+	}
+
+	// ctrl-F for search
+	window.addEventListener("keydown",function (e) {
+		if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+			e.preventDefault();
+			search_prompt();
+		}
+	})
+
+	// functions
+	function find_child(parent, name, attr) {
+		var children = parent.childNodes;
+		for (var i=0; i<children.length;i++) {
+			if (children[i].tagName == name)
+				return (attr != undefined) ? children[i].attributes[attr].value : children[i];
+		}
+		return;
+	}
+	function orig_save(e, attr, val) {
+		if (e.attributes["_orig_"+attr] != undefined) return;
+		if (e.attributes[attr] == undefined) return;
+		if (val == undefined) val = e.attributes[attr].value;
+		e.setAttribute("_orig_"+attr, val);
+	}
+	function orig_load(e, attr) {
+		if (e.attributes["_orig_"+attr] == undefined) return;
+		e.attributes[attr].value = e.attributes["_orig_"+attr].value;
+		e.removeAttribute("_orig_"+attr);
+	}
+	function g_to_text(e) {
+		var text = find_child(e, "title").firstChild.nodeValue;
+		return (text)
+	}
+	function g_to_func(e) {
+		var func = g_to_text(e);
+		if (func != null)
+			func = func.replace(/ .*/, "");
+		return (func);
+	}
+	function update_text(e) {
+		var r = find_child(e, "rect");
+		var t = find_child(e, "text");
+		var w = parseFloat(r.attributes["width"].value) -3;
+		var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+		t.attributes["x"].value = parseFloat(r.attributes["x"].value) +3;
+
+		// Smaller than this size won't fit anything
+		if (w < 2*12*0.59) {
+			t.textContent = "";
+			return;
+		}
+
+		t.textContent = txt;
+		// Fit in full text width
+		if (/^ *$/.test(txt) || t.getSubStringLength(0, txt.length) < w)
+			return;
+
+		for (var x=txt.length-2; x>0; x--) {
+			if (t.getSubStringLength(0, x+2) <= w) {
+				t.textContent = txt.substring(0,x) + "..";
+				return;
+			}
+		}
+		t.textContent = "";
+	}
+
+	// zoom
+	function zoom_reset(e) {
+		if (e.attributes != undefined) {
+			orig_load(e, "x");
+			orig_load(e, "width");
+		}
+		if (e.childNodes == undefined) return;
+		for(var i=0, c=e.childNodes; i<c.length; i++) {
+			zoom_reset(c[i]);
+		}
+	}
+	function zoom_child(e, x, ratio) {
+		if (e.attributes != undefined) {
+			if (e.attributes["x"] != undefined) {
+				orig_save(e, "x");
+				e.attributes["x"].value = (parseFloat(e.attributes["x"].value) - x - 10) * ratio + 10;
+				if(e.tagName == "text") e.attributes["x"].value = find_child(e.parentNode, "rect", "x") + 3;
+			}
+			if (e.attributes["width"] != undefined) {
+				orig_save(e, "width");
+				e.attributes["width"].value = parseFloat(e.attributes["width"].value) * ratio;
+			}
+		}
+
+		if (e.childNodes == undefined) return;
+		for(var i=0, c=e.childNodes; i<c.length; i++) {
+			zoom_child(c[i], x-10, ratio);
+		}
+	}
+	function zoom_parent(e) {
+		if (e.attributes) {
+			if (e.attributes["x"] != undefined) {
+				orig_save(e, "x");
+				e.attributes["x"].value = 10;
+			}
+			if (e.attributes["width"] != undefined) {
+				orig_save(e, "width");
+				e.attributes["width"].value = parseInt(svg.width.baseVal.value) - (10*2);
+			}
+		}
+		if (e.childNodes == undefined) return;
+		for(var i=0, c=e.childNodes; i<c.length; i++) {
+			zoom_parent(c[i]);
+		}
+	}
+	function zoom(node) {
+		var attr = find_child(node, "rect").attributes;
+		var width = parseFloat(attr["width"].value);
+		var xmin = parseFloat(attr["x"].value);
+		var xmax = parseFloat(xmin + width);
+		var ymin = parseFloat(attr["y"].value);
+		var ratio = (svg.width.baseVal.value - 2*10) / width;
+
+		// XXX: Workaround for JavaScript float issues (fix me)
+		var fudge = 0.0001;
+
+		var unzoombtn = document.getElementById("unzoom");
+		unzoombtn.style["opacity"] = "1.0";
+
+		var el = document.getElementsByTagName("g");
+		for(var i=0;i<el.length;i++){
+			var e = el[i];
+			var a = find_child(e, "rect").attributes;
+			var ex = parseFloat(a["x"].value);
+			var ew = parseFloat(a["width"].value);
+			// Is it an ancestor
+			if (0 == 0) {
+				var upstack = parseFloat(a["y"].value) > ymin;
+			} else {
+				var upstack = parseFloat(a["y"].value) < ymin;
+			}
+			if (upstack) {
+				// Direct ancestor
+				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
+					e.style["opacity"] = "0.5";
+					zoom_parent(e);
+					e.onclick = function(e){unzoom(); zoom(this);};
+					update_text(e);
+				}
+				// not in current path
+				else
+					e.style["display"] = "none";
+			}
+			// Children maybe
+			else {
+				// no common path
+				if (ex < xmin || ex + fudge >= xmax) {
+					e.style["display"] = "none";
+				}
+				else {
+					zoom_child(e, xmin, ratio);
+					e.onclick = function(e){zoom(this);};
+					update_text(e);
+				}
+			}
+		}
+	}
+	function unzoom() {
+		var unzoombtn = document.getElementById("unzoom");
+		unzoombtn.style["opacity"] = "0.0";
+
+		var el = document.getElementsByTagName("g");
+		for(i=0;i<el.length;i++) {
+			el[i].style["display"] = "block";
+			el[i].style["opacity"] = "1";
+			zoom_reset(el[i]);
+			update_text(el[i]);
+		}
+	}
+
+	// search
+	function reset_search() {
+		var el = document.getElementsByTagName("rect");
+		for (var i=0; i < el.length; i++) {
+			orig_load(el[i], "fill")
+		}
+	}
+	function search_prompt() {
+		if (!searching) {
+			var term = prompt("Enter a search term (regexp " +
+			    "allowed, eg: ^ext4_)", "");
+			if (term != null) {
+				search(term)
+			}
+		} else {
+			reset_search();
+			searching = 0;
+			searchbtn.style["opacity"] = "0.1";
+			searchbtn.firstChild.nodeValue = "Search"
+			matchedtxt.style["opacity"] = "0.0";
+			matchedtxt.firstChild.nodeValue = ""
+		}
+	}
+	function search(term) {
+		var re = new RegExp(term);
+		var el = document.getElementsByTagName("g");
+		var matches = new Object();
+		var maxwidth = 0;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			if (e.attributes["class"].value != "func_g")
+				continue;
+			var func = g_to_func(e);
+			var rect = find_child(e, "rect");
+			if (rect == null) {
+				// the rect might be wrapped in an anchor
+				// if nameattr href is being used
+				if (rect = find_child(e, "a")) {
+				    rect = find_child(r, "rect");
+				}
+			}
+			if (func == null || rect == null)
+				continue;
+
+			// Save max width. Only works as we have a root frame
+			var w = parseFloat(rect.attributes["width"].value);
+			if (w > maxwidth)
+				maxwidth = w;
+
+			if (func.match(re)) {
+				// highlight
+				var x = parseFloat(rect.attributes["x"].value);
+				orig_save(rect, "fill");
+				rect.attributes["fill"].value =
+				    "rgb(230,0,230)";
+
+				// remember matches
+				if (matches[x] == undefined) {
+					matches[x] = w;
+				} else {
+					if (w > matches[x]) {
+						// overwrite with parent
+						matches[x] = w;
+					}
+				}
+				searching = 1;
+			}
+		}
+		if (!searching)
+			return;
+
+		searchbtn.style["opacity"] = "1.0";
+		searchbtn.firstChild.nodeValue = "Reset Search"
+
+		// calculate percent matched, excluding vertical overlap
+		var count = 0;
+		var lastx = -1;
+		var lastw = 0;
+		var keys = Array();
+		for (k in matches) {
+			if (matches.hasOwnProperty(k))
+				keys.push(k);
+		}
+		// sort the matched frames by their x location
+		// ascending, then width descending
+		keys.sort(function(a, b){
+				return a - b;
+			if (a < b || a > b)
+				return a - b;
+			return matches[b] - matches[a];
+		});
+		// Step through frames saving only the biggest bottom-up frames
+		// thanks to the sort order. This relies on the tree property
+		// where children are always smaller than their parents.
+		for (var k in keys) {
+			var x = parseFloat(keys[k]);
+			var w = matches[keys[k]];
+			if (x >= lastx + lastw) {
+				count += w;
+				lastx = x;
+				lastw = w;
+			}
+		}
+		// display matched percent
+		matchedtxt.style["opacity"] = "1.0";
+		pct = 100 * count / maxwidth;
+		if (pct == 100)
+			pct = "100"
+		else
+			pct = pct.toFixed(1)
+		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+	}
+	function searchover(e) {
+		searchbtn.style["opacity"] = "1.0";
+	}
+	function searchout(e) {
+		if (searching) {
+			searchbtn.style["opacity"] = "1.0";
+		} else {
+			searchbtn.style["opacity"] = "0.1";
+		}
+	}
+]]>
+</script>
+<rect x="0.0" y="0" width="1200.0" height="626.0" fill="url(#background)"  />
+<text text-anchor="middle" x="600.00" y="24" font-size="17" font-family="Verdana" fill="rgb(0,0,0)"  >Flame Graph</text>
+<text text-anchor="" x="10.00" y="609" font-size="12" font-family="Verdana" fill="rgb(0,0,0)" id="details" > </text>
+<text text-anchor="" x="10.00" y="24" font-size="12" font-family="Verdana" fill="rgb(0,0,0)" id="unzoom" onclick="unzoom()" style="opacity:0.0;cursor:pointer" >Reset Zoom</text>
+<text text-anchor="" x="1090.00" y="24" font-size="12" font-family="Verdana" fill="rgb(0,0,0)" id="search" onmouseover="searchover()" onmouseout="searchout()" onclick="search_prompt()" style="opacity:0.1;cursor:pointer" >Search</text>
+<text text-anchor="" x="1090.00" y="609" font-size="12" font-family="Verdana" fill="rgb(0,0,0)" id="matched" > </text>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>MPI_Irecv (6 samples, 4.92%)</title><rect x="745.1" y="273" width="58.0" height="15.0" fill="rgb(213,26,14)" rx="2" ry="2" />
+<text text-anchor="" x="748.08" y="283.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >MPI_Ir..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>vm_munmap (3 samples, 2.46%)</title><rect x="977.2" y="401" width="29.0" height="15.0" fill="rgb(205,173,49)" rx="2" ry="2" />
+<text text-anchor="" x="980.21" y="411.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >vm..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>surf_solve (6 samples, 4.92%)</title><rect x="513.0" y="465" width="58.0" height="15.0" fill="rgb(213,176,30)" rx="2" ry="2" />
+<text text-anchor="" x="515.95" y="475.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >surf_s..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>SIMIX_run.part.107.lto_priv.1545 (26 samples, 21.31%)</title><rect x="338.9" y="481" width="251.4" height="15.0" fill="rgb(253,163,49)" rx="2" ry="2" />
+<text text-anchor="" x="341.85" y="491.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >SIMIX_run.part.107.lto_priv.1545</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>simgrid::surf::NetworkCm02Model::updateActionsStateLazy (2 samples, 1.64%)</title><rect x="551.6" y="433" width="19.4" height="15.0" fill="rgb(237,133,51)" rx="2" ry="2" />
+<text text-anchor="" x="554.64" y="443.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>smpi_main::{lambda (55 samples, 45.08%)</title><rect x="638.7" y="529" width="532.0" height="15.0" fill="rgb(223,129,49)" rx="2" ry="2" />
+<text text-anchor="" x="641.69" y="539.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >smpi_main::{lambda</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__perf_event_task_sched_in (2 samples, 1.64%)</title><rect x="1006.2" y="241" width="19.4" height="15.0" fill="rgb(228,104,34)" rx="2" ry="2" />
+<text text-anchor="" x="1009.23" y="251.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__intel_pmu_enable_all (2 samples, 1.64%)</title><rect x="39.0" y="369" width="19.4" height="15.0" fill="rgb(214,196,24)" rx="2" ry="2" />
+<text text-anchor="" x="42.02" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>simgrid::smpi::Request::print_request (1 samples, 0.82%)</title><rect x="919.2" y="225" width="9.7" height="15.0" fill="rgb(246,167,25)" rx="2" ry="2" />
+<text text-anchor="" x="922.18" y="235.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>smpi_bench_end.part.50.lto_priv.1020 (1 samples, 0.82%)</title><rect x="184.1" y="529" width="9.7" height="15.0" fill="rgb(226,171,50)" rx="2" ry="2" />
+<text text-anchor="" x="187.10" y="539.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>simgrid::smpi::Status::empty (1 samples, 0.82%)</title><rect x="174.4" y="529" width="9.7" height="15.0" fill="rgb(227,28,10)" rx="2" ry="2" />
+<text text-anchor="" x="177.43" y="539.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_int_malloc (1 samples, 0.82%)</title><rect x="812.8" y="193" width="9.7" height="15.0" fill="rgb(218,62,9)" rx="2" ry="2" />
+<text text-anchor="" x="815.79" y="203.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__splice_from_pipe (1 samples, 0.82%)</title><rect x="1170.7" y="385" width="9.6" height="15.0" fill="rgb(242,75,48)" rx="2" ry="2" />
+<text text-anchor="" x="1173.66" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>search_binary_handler (1 samples, 0.82%)</title><rect x="629.0" y="497" width="9.7" height="15.0" fill="rgb(245,70,16)" rx="2" ry="2" />
+<text text-anchor="" x="632.02" y="507.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>unlock_page (5 samples, 4.10%)</title><rect x="1093.3" y="273" width="48.3" height="15.0" fill="rgb(209,69,38)" rx="2" ry="2" />
+<text text-anchor="" x="1096.28" y="283.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >unlo..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>operator new (1 samples, 0.82%)</title><rect x="396.9" y="433" width="9.7" height="15.0" fill="rgb(210,2,50)" rx="2" ry="2" />
+<text text-anchor="" x="399.89" y="443.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>sched_clock (2 samples, 1.64%)</title><rect x="271.1" y="385" width="19.4" height="15.0" fill="rgb(212,101,5)" rx="2" ry="2" />
+<text text-anchor="" x="274.15" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>x86_pmu_enable (2 samples, 1.64%)</title><rect x="39.0" y="401" width="19.4" height="15.0" fill="rgb(239,73,11)" rx="2" ry="2" />
+<text text-anchor="" x="42.02" y="411.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_find_matching_comm (1 samples, 0.82%)</title><rect x="387.2" y="433" width="9.7" height="15.0" fill="rgb(221,183,2)" rx="2" ry="2" />
+<text text-anchor="" x="390.21" y="443.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>operator new (1 samples, 0.82%)</title><rect x="406.6" y="433" width="9.6" height="15.0" fill="rgb(210,215,28)" rx="2" ry="2" />
+<text text-anchor="" x="409.56" y="443.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>lmm_update_variable_weight (1 samples, 0.82%)</title><rect x="145.4" y="529" width="9.7" height="15.0" fill="rgb(224,179,11)" rx="2" ry="2" />
+<text text-anchor="" x="148.41" y="539.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__vdso_clock_gettime (12 samples, 9.84%)</title><rect x="222.8" y="545" width="116.1" height="15.0" fill="rgb(254,156,40)" rx="2" ry="2" />
+<text text-anchor="" x="225.79" y="555.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >__vdso_clock_g..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>simgrid::smpi::Request::start (2 samples, 1.64%)</title><rect x="803.1" y="225" width="19.4" height="15.0" fill="rgb(238,216,48)" rx="2" ry="2" />
+<text text-anchor="" x="806.11" y="235.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>update_rq_clock.part.80 (2 samples, 1.64%)</title><rect x="271.1" y="417" width="19.4" height="15.0" fill="rgb(219,176,0)" rx="2" ry="2" />
+<text text-anchor="" x="274.15" y="427.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>ecryptfs_parse_tag_70_packet (1 samples, 0.82%)</title><rect x="619.3" y="369" width="9.7" height="15.0" fill="rgb(254,30,53)" rx="2" ry="2" />
+<text text-anchor="" x="622.34" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>smpimain (117 samples, 95.90%)</title><rect x="58.4" y="561" width="1131.6" height="15.0" fill="rgb(251,150,47)" rx="2" ry="2" />
+<text text-anchor="" x="61.36" y="571.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >smpimain</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>surf_model_extract_done_action_set (1 samples, 0.82%)</title><rect x="503.3" y="449" width="9.7" height="15.0" fill="rgb(247,156,13)" rx="2" ry="2" />
+<text text-anchor="" x="506.28" y="459.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>SIMIX_process_self (1 samples, 0.82%)</title><rect x="696.7" y="401" width="9.7" height="15.0" fill="rgb(240,137,15)" rx="2" ry="2" />
+<text text-anchor="" x="699.72" y="411.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>SIMIX_process_ref (1 samples, 0.82%)</title><rect x="880.5" y="193" width="9.7" height="15.0" fill="rgb(232,102,53)" rx="2" ry="2" />
+<text text-anchor="" x="883.49" y="203.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cpu_clock_sample (4 samples, 3.28%)</title><rect x="251.8" y="449" width="38.7" height="15.0" fill="rgb(227,49,22)" rx="2" ry="2" />
+<text text-anchor="" x="254.80" y="459.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >cpu..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>perf_event_context_sched_in (2 samples, 1.64%)</title><rect x="290.5" y="417" width="19.3" height="15.0" fill="rgb(239,157,37)" rx="2" ry="2" />
+<text text-anchor="" x="293.49" y="427.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>perf_pmu_enable.part.89 (2 samples, 1.64%)</title><rect x="39.0" y="417" width="19.4" height="15.0" fill="rgb(228,111,25)" rx="2" ry="2" />
+<text text-anchor="" x="42.02" y="427.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__memcpy_avx_unaligned (1 samples, 0.82%)</title><rect x="803.1" y="209" width="9.7" height="15.0" fill="rgb(228,100,32)" rx="2" ry="2" />
+<text text-anchor="" x="806.11" y="219.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>sched_clock_cpu (2 samples, 1.64%)</title><rect x="271.1" y="401" width="19.4" height="15.0" fill="rgb(212,21,29)" rx="2" ry="2" />
+<text text-anchor="" x="274.15" y="411.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>HPL_pdlaswp01T (3 samples, 2.46%)</title><rect x="948.2" y="417" width="29.0" height="15.0" fill="rgb(232,227,15)" rx="2" ry="2" />
+<text text-anchor="" x="951.20" y="427.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >HP..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>lmm_update_modified_set (2 samples, 1.64%)</title><rect x="551.6" y="385" width="19.4" height="15.0" fill="rgb(246,34,37)" rx="2" ry="2" />
+<text text-anchor="" x="554.64" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>xbt_dict_get_elm_or_null (1 samples, 0.82%)</title><rect x="687.0" y="337" width="9.7" height="15.0" fill="rgb(227,95,29)" rx="2" ry="2" />
+<text text-anchor="" x="690.05" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>xbt_dynar_three_way_partition (1 samples, 0.82%)</title><rect x="580.7" y="465" width="9.6" height="15.0" fill="rgb(218,199,38)" rx="2" ry="2" />
+<text text-anchor="" x="583.66" y="475.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (2 samples, 1.64%)</title><rect x="290.5" y="481" width="19.3" height="15.0" fill="rgb(249,16,27)" rx="2" ry="2" />
+<text text-anchor="" x="293.49" y="491.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>HPL_pdrpanllT (23 samples, 18.85%)</title><rect x="725.7" y="337" width="222.5" height="15.0" fill="rgb(225,173,20)" rx="2" ry="2" />
+<text text-anchor="" x="728.74" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >HPL_pdrpanllT</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__schedule (2 samples, 1.64%)</title><rect x="290.5" y="465" width="19.3" height="15.0" fill="rgb(247,188,38)" rx="2" ry="2" />
+<text text-anchor="" x="293.49" y="475.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>schedule (1 samples, 0.82%)</title><rect x="861.1" y="193" width="9.7" height="15.0" fill="rgb(251,33,47)" rx="2" ry="2" />
+<text text-anchor="" x="864.15" y="203.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>calloc@plt (1 samples, 0.82%)</title><rect x="126.1" y="529" width="9.6" height="15.0" fill="rgb(234,67,11)" rx="2" ry="2" />
+<text text-anchor="" x="129.07" y="539.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>HPL_pdrpanllT (25 samples, 20.49%)</title><rect x="706.4" y="369" width="241.8" height="15.0" fill="rgb(254,94,34)" rx="2" ry="2" />
+<text text-anchor="" x="709.39" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >HPL_pdrpanllT</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>ATL_dcopy_xp0yp0aXbX (1 samples, 0.82%)</title><rect x="58.4" y="545" width="9.6" height="15.0" fill="rgb(223,207,5)" rx="2" ry="2" />
+<text text-anchor="" x="61.36" y="555.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>simgrid::smpi::Group::rank (2 samples, 1.64%)</title><rect x="890.2" y="209" width="19.3" height="15.0" fill="rgb(221,125,0)" rx="2" ry="2" />
+<text text-anchor="" x="893.16" y="219.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>preempt_schedule_common (2 samples, 1.64%)</title><rect x="1006.2" y="289" width="19.4" height="15.0" fill="rgb(244,93,49)" rx="2" ry="2" />
+<text text-anchor="" x="1009.23" y="299.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>perf_pmu_enable.part.89 (2 samples, 1.64%)</title><rect x="1006.2" y="209" width="19.4" height="15.0" fill="rgb(225,108,23)" rx="2" ry="2" />
+<text text-anchor="" x="1009.23" y="219.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>do_munmap (3 samples, 2.46%)</title><rect x="977.2" y="385" width="29.0" height="15.0" fill="rgb(228,19,31)" rx="2" ry="2" />
+<text text-anchor="" x="980.21" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >do..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>intel_pmu_enable_all (1 samples, 0.82%)</title><rect x="861.1" y="81" width="9.7" height="15.0" fill="rgb(254,177,18)" rx="2" ry="2" />
+<text text-anchor="" x="864.15" y="91.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>native_irq_return_iret (1 samples, 0.82%)</title><rect x="39.0" y="353" width="9.7" height="15.0" fill="rgb(222,11,4)" rx="2" ry="2" />
+<text text-anchor="" x="42.02" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_ZN7simgrid4smpi7Request4waitEPPS1_P10MPI_Status@plt (1 samples, 0.82%)</title><rect x="87.4" y="529" width="9.6" height="15.0" fill="rgb(224,193,24)" rx="2" ry="2" />
+<text text-anchor="" x="90.38" y="539.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>posix_cpu_clock_get_task (4 samples, 3.28%)</title><rect x="251.8" y="465" width="38.7" height="15.0" fill="rgb(248,191,53)" rx="2" ry="2" />
+<text text-anchor="" x="254.80" y="475.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >pos..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>xbt_cfg_get_boolean (1 samples, 0.82%)</title><rect x="793.4" y="225" width="9.7" height="15.0" fill="rgb(209,228,35)" rx="2" ry="2" />
+<text text-anchor="" x="796.44" y="235.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>[unknown] (12 samples, 9.84%)</title><rect x="87.4" y="545" width="116.0" height="15.0" fill="rgb(217,157,14)" rx="2" ry="2" />
+<text text-anchor="" x="90.38" y="555.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >[unknown]</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>PMPI_Send (2 samples, 1.64%)</title><rect x="803.1" y="257" width="19.4" height="15.0" fill="rgb(231,128,33)" rx="2" ry="2" />
+<text text-anchor="" x="806.11" y="267.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>simgrid::surf::CpuCas01Action::~CpuCas01Action (1 samples, 0.82%)</title><rect x="483.9" y="401" width="9.7" height="15.0" fill="rgb(244,221,30)" rx="2" ry="2" />
+<text text-anchor="" x="486.93" y="411.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>lmm_update_modified_set (1 samples, 0.82%)</title><rect x="474.3" y="385" width="9.6" height="15.0" fill="rgb(212,157,13)" rx="2" ry="2" />
+<text text-anchor="" x="477.26" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>page_add_file_rmap (4 samples, 3.28%)</title><rect x="1054.6" y="257" width="38.7" height="15.0" fill="rgb(210,198,19)" rx="2" ry="2" />
+<text text-anchor="" x="1057.59" y="267.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >pag..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>SIMIX_comm_finish (2 samples, 1.64%)</title><rect x="425.9" y="433" width="19.3" height="15.0" fill="rgb(241,127,41)" rx="2" ry="2" />
+<text text-anchor="" x="428.90" y="443.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>try_to_wake_up (1 samples, 0.82%)</title><rect x="1170.7" y="49" width="9.6" height="15.0" fill="rgb(252,5,40)" rx="2" ry="2" />
+<text text-anchor="" x="1173.66" y="59.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>entry_SYSCALL_64_fastpath (1 samples, 0.82%)</title><rect x="1170.7" y="513" width="9.6" height="15.0" fill="rgb(236,135,32)" rx="2" ry="2" />
+<text text-anchor="" x="1173.66" y="523.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>simgrid::smpi::Request::send (2 samples, 1.64%)</title><rect x="803.1" y="241" width="19.4" height="15.0" fill="rgb(218,135,45)" rx="2" ry="2" />
+<text text-anchor="" x="806.11" y="251.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__intel_pmu_enable_all (1 samples, 0.82%)</title><rect x="861.1" y="65" width="9.7" height="15.0" fill="rgb(216,61,5)" rx="2" ry="2" />
+<text text-anchor="" x="864.15" y="75.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>entry_SYSCALL_64_fastpath (2 samples, 1.64%)</title><rect x="600.0" y="545" width="19.3" height="15.0" fill="rgb(238,38,36)" rx="2" ry="2" />
+<text text-anchor="" x="603.00" y="555.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>cblas_dcopy (1 samples, 0.82%)</title><rect x="590.3" y="545" width="9.7" height="15.0" fill="rgb(236,108,40)" rx="2" ry="2" />
+<text text-anchor="" x="593.33" y="555.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>vm_mmap_pgoff (14 samples, 11.48%)</title><rect x="1006.2" y="369" width="135.4" height="15.0" fill="rgb(249,11,29)" rx="2" ry="2" />
+<text text-anchor="" x="1009.23" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >vm_mmap_pgoff</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>simgrid::smpi::Group::rank (2 samples, 1.64%)</title><rect x="667.7" y="369" width="19.3" height="15.0" fill="rgb(214,66,45)" rx="2" ry="2" />
+<text text-anchor="" x="670.70" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>vm_mmap (1 samples, 0.82%)</title><rect x="629.0" y="449" width="9.7" height="15.0" fill="rgb(247,186,35)" rx="2" ry="2" />
+<text text-anchor="" x="632.02" y="459.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>lmm_solve (1 samples, 0.82%)</title><rect x="135.7" y="529" width="9.7" height="15.0" fill="rgb(230,120,24)" rx="2" ry="2" />
+<text text-anchor="" x="138.74" y="539.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>entry_SYSCALL_64_fastpath (1 samples, 0.82%)</title><rect x="619.3" y="513" width="9.7" height="15.0" fill="rgb(219,60,40)" rx="2" ry="2" />
+<text text-anchor="" x="622.34" y="523.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>sys_clock_gettime (4 samples, 3.28%)</title><rect x="251.8" y="513" width="38.7" height="15.0" fill="rgb(225,143,23)" rx="2" ry="2" />
+<text text-anchor="" x="254.80" y="523.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >sys..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>smpi_main (26 samples, 21.31%)</title><rect x="338.9" y="513" width="251.4" height="15.0" fill="rgb(223,106,42)" rx="2" ry="2" />
+<text text-anchor="" x="341.85" y="523.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >smpi_main</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>smp_apic_timer_interrupt (1 samples, 0.82%)</title><rect x="1170.7" y="145" width="9.6" height="15.0" fill="rgb(218,17,39)" rx="2" ry="2" />
+<text text-anchor="" x="1173.66" y="155.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>native_write_msr_safe (3 samples, 2.46%)</title><rect x="1141.6" y="417" width="29.1" height="15.0" fill="rgb(246,20,39)" rx="2" ry="2" />
+<text text-anchor="" x="1144.64" y="427.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >na..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>PMPI_Irecv (6 samples, 4.92%)</title><rect x="745.1" y="257" width="58.0" height="15.0" fill="rgb(214,209,7)" rx="2" ry="2" />
+<text text-anchor="" x="748.08" y="267.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >PMPI_I..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>simgrid::surf::Action::~Action (1 samples, 0.82%)</title><rect x="483.9" y="385" width="9.7" height="15.0" fill="rgb(216,5,15)" rx="2" ry="2" />
+<text text-anchor="" x="486.93" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__ablk_encrypt (1 samples, 0.82%)</title><rect x="1170.7" y="177" width="9.6" height="15.0" fill="rgb(254,153,2)" rx="2" ry="2" />
+<text text-anchor="" x="1173.66" y="187.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>task_sched_runtime (4 samples, 3.28%)</title><rect x="251.8" y="433" width="38.7" height="15.0" fill="rgb(249,98,20)" rx="2" ry="2" />
+<text text-anchor="" x="254.80" y="443.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >tas..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>simgrid::config::Config::operator[] (1 samples, 0.82%)</title><rect x="687.0" y="353" width="9.7" height="15.0" fill="rgb(209,54,39)" rx="2" ry="2" />
+<text text-anchor="" x="690.05" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>MPI_Send (1 samples, 0.82%)</title><rect x="716.1" y="289" width="9.6" height="15.0" fill="rgb(236,81,11)" rx="2" ry="2" />
+<text text-anchor="" x="719.07" y="299.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>smpi_execute_flops (1 samples, 0.82%)</title><rect x="783.8" y="209" width="9.6" height="15.0" fill="rgb(252,116,2)" rx="2" ry="2" />
+<text text-anchor="" x="786.77" y="219.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>perf_event_context_sched_in (2 samples, 1.64%)</title><rect x="39.0" y="433" width="19.4" height="15.0" fill="rgb(253,144,54)" rx="2" ry="2" />
+<text text-anchor="" x="42.02" y="443.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>SIMIX_wake_processes (1 samples, 0.82%)</title><rect x="77.7" y="529" width="9.7" height="15.0" fill="rgb(211,26,23)" rx="2" ry="2" />
+<text text-anchor="" x="80.70" y="539.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>simgrid::config::Config::operator[] (1 samples, 0.82%)</title><rect x="754.8" y="193" width="9.6" height="15.0" fill="rgb(219,195,42)" rx="2" ry="2" />
+<text text-anchor="" x="757.75" y="203.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>populate_vma_page_range (14 samples, 11.48%)</title><rect x="1006.2" y="337" width="135.4" height="15.0" fill="rgb(238,90,7)" rx="2" ry="2" />
+<text text-anchor="" x="1009.23" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >populate_vma_page..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>ecryptfs_follow_link (1 samples, 0.82%)</title><rect x="619.3" y="417" width="9.7" height="15.0" fill="rgb(207,118,17)" rx="2" ry="2" />
+<text text-anchor="" x="622.34" y="427.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>crypt_extent (1 samples, 0.82%)</title><rect x="1170.7" y="225" width="9.6" height="15.0" fill="rgb(239,7,40)" rx="2" ry="2" />
+<text text-anchor="" x="1173.66" y="235.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bvprintf (1 samples, 0.82%)</title><rect x="677.4" y="337" width="9.6" height="15.0" fill="rgb(236,143,47)" rx="2" ry="2" />
+<text text-anchor="" x="680.38" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>do_mmap (1 samples, 0.82%)</title><rect x="629.0" y="417" width="9.7" height="15.0" fill="rgb(205,110,39)" rx="2" ry="2" />
+<text text-anchor="" x="632.02" y="427.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>native_sched_clock (1 samples, 0.82%)</title><rect x="822.5" y="241" width="9.6" height="15.0" fill="rgb(243,170,18)" rx="2" ry="2" />
+<text text-anchor="" x="825.46" y="251.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>apic_timer_interrupt (1 samples, 0.82%)</title><rect x="1170.7" y="161" width="9.6" height="15.0" fill="rgb(244,87,10)" rx="2" ry="2" />
+<text text-anchor="" x="1173.66" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>follow_page_mask (1 samples, 0.82%)</title><rect x="1025.6" y="305" width="9.6" height="15.0" fill="rgb(208,150,0)" rx="2" ry="2" />
+<text text-anchor="" x="1028.57" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>ecryptfs_readlink_lower (1 samples, 0.82%)</title><rect x="619.3" y="401" width="9.7" height="15.0" fill="rgb(254,154,25)" rx="2" ry="2" />
+<text text-anchor="" x="622.34" y="411.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>SIMIX_context_self (1 samples, 0.82%)</title><rect x="696.7" y="385" width="9.7" height="15.0" fill="rgb(236,46,51)" rx="2" ry="2" />
+<text text-anchor="" x="699.72" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>xbt_cfg_get_int (1 samples, 0.82%)</title><rect x="754.8" y="209" width="9.6" height="15.0" fill="rgb(228,168,17)" rx="2" ry="2" />
+<text text-anchor="" x="757.75" y="219.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>native_write_msr_safe (3 samples, 2.46%)</title><rect x="309.8" y="529" width="29.1" height="15.0" fill="rgb(206,110,25)" rx="2" ry="2" />
+<text text-anchor="" x="312.84" y="539.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >na..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>select_task_rq_rt (1 samples, 0.82%)</title><rect x="1170.7" y="33" width="9.6" height="15.0" fill="rgb(253,67,28)" rx="2" ry="2" />
+<text text-anchor="" x="1173.66" y="43.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_int_malloc (1 samples, 0.82%)</title><rect x="396.9" y="401" width="9.7" height="15.0" fill="rgb(250,53,6)" rx="2" ry="2" />
+<text text-anchor="" x="399.89" y="411.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>ATL_dcopy_xp1yp1aXbX (1 samples, 0.82%)</title><rect x="68.0" y="545" width="9.7" height="15.0" fill="rgb(215,31,24)" rx="2" ry="2" />
+<text text-anchor="" x="71.03" y="555.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>exit_to_usermode_loop (2 samples, 1.64%)</title><rect x="290.5" y="497" width="19.3" height="15.0" fill="rgb(229,213,52)" rx="2" ry="2" />
+<text text-anchor="" x="293.49" y="507.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>std::__cxx11::list&lt;s_smx_simcall*, std::allocator&lt;s_smx_simcall*&gt; &gt;::_M_insert&lt;s_smx_simcall* const&amp;&gt; (1 samples, 0.82%)</title><rect x="406.6" y="449" width="9.6" height="15.0" fill="rgb(240,16,47)" rx="2" ry="2" />
+<text text-anchor="" x="409.56" y="459.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_ZN7simgrid4surf6Action18getRemainsNoUpdateEv@plt (1 samples, 0.82%)</title><rect x="97.0" y="529" width="9.7" height="15.0" fill="rgb(234,174,8)" rx="2" ry="2" />
+<text text-anchor="" x="100.05" y="539.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>HPL_pdpanllT (1 samples, 0.82%)</title><rect x="716.1" y="337" width="9.6" height="15.0" fill="rgb(213,5,34)" rx="2" ry="2" />
+<text text-anchor="" x="719.07" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__vasprintf_chk (1 samples, 0.82%)</title><rect x="677.4" y="321" width="9.6" height="15.0" fill="rgb(219,34,23)" rx="2" ry="2" />
+<text text-anchor="" x="680.38" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__strcmp_sse2_unaligned (1 samples, 0.82%)</title><rect x="687.0" y="321" width="9.7" height="15.0" fill="rgb(247,42,52)" rx="2" ry="2" />
+<text text-anchor="" x="690.05" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__perf_event_task_sched_in (1 samples, 0.82%)</title><rect x="861.1" y="145" width="9.7" height="15.0" fill="rgb(248,138,8)" rx="2" ry="2" />
+<text text-anchor="" x="864.15" y="155.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>vfprintf (1 samples, 0.82%)</title><rect x="677.4" y="305" width="9.6" height="15.0" fill="rgb(228,28,9)" rx="2" ry="2" />
+<text text-anchor="" x="680.38" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>crypto_ecb_setkey (1 samples, 0.82%)</title><rect x="619.3" y="337" width="9.7" height="15.0" fill="rgb(206,102,46)" rx="2" ry="2" />
+<text text-anchor="" x="622.34" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>lmm_variable_new (1 samples, 0.82%)</title><rect x="338.9" y="401" width="9.6" height="15.0" fill="rgb(212,70,39)" rx="2" ry="2" />
+<text text-anchor="" x="341.85" y="411.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>perf_pmu_enable.part.89 (2 samples, 1.64%)</title><rect x="290.5" y="401" width="19.3" height="15.0" fill="rgb(249,95,16)" rx="2" ry="2" />
+<text text-anchor="" x="293.49" y="411.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>printf_positional (1 samples, 0.82%)</title><rect x="899.8" y="129" width="9.7" height="15.0" fill="rgb(247,65,29)" rx="2" ry="2" />
+<text text-anchor="" x="902.84" y="139.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__intel_pmu_enable_all (2 samples, 1.64%)</title><rect x="1006.2" y="161" width="19.4" height="15.0" fill="rgb(233,142,1)" rx="2" ry="2" />
+<text text-anchor="" x="1009.23" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>vma_link (1 samples, 0.82%)</title><rect x="629.0" y="385" width="9.7" height="15.0" fill="rgb(225,51,23)" rx="2" ry="2" />
+<text text-anchor="" x="632.02" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>sys_mmap_pgoff (14 samples, 11.48%)</title><rect x="1006.2" y="385" width="135.4" height="15.0" fill="rgb(216,106,16)" rx="2" ry="2" />
+<text text-anchor="" x="1009.23" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >sys_mmap_pgoff</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>smpi_shared_free (3 samples, 2.46%)</title><rect x="977.2" y="465" width="29.0" height="15.0" fill="rgb(249,114,30)" rx="2" ry="2" />
+<text text-anchor="" x="980.21" y="475.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >sm..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>crypt_scatterlist (1 samples, 0.82%)</title><rect x="1170.7" y="209" width="9.6" height="15.0" fill="rgb(238,61,27)" rx="2" ry="2" />
+<text text-anchor="" x="1173.66" y="219.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>free (1 samples, 0.82%)</title><rect x="435.6" y="401" width="9.6" height="15.0" fill="rgb(235,126,53)" rx="2" ry="2" />
+<text text-anchor="" x="438.57" y="411.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>native_write_msr_safe (1 samples, 0.82%)</title><rect x="861.1" y="49" width="9.7" height="15.0" fill="rgb(213,148,22)" rx="2" ry="2" />
+<text text-anchor="" x="864.15" y="59.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>do_set_pte (5 samples, 4.10%)</title><rect x="1044.9" y="273" width="48.4" height="15.0" fill="rgb(244,112,46)" rx="2" ry="2" />
+<text text-anchor="" x="1047.92" y="283.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >do_s..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>exit_to_usermode_loop (1 samples, 0.82%)</title><rect x="861.1" y="209" width="9.7" height="15.0" fill="rgb(247,191,10)" rx="2" ry="2" />
+<text text-anchor="" x="864.15" y="219.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>finish_task_switch (2 samples, 1.64%)</title><rect x="290.5" y="449" width="19.3" height="15.0" fill="rgb(210,4,7)" rx="2" ry="2" />
+<text text-anchor="" x="293.49" y="459.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>vfprintf (1 samples, 0.82%)</title><rect x="938.5" y="241" width="9.7" height="15.0" fill="rgb(206,197,42)" rx="2" ry="2" />
+<text text-anchor="" x="941.52" y="251.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>update_curr (1 samples, 0.82%)</title><rect x="261.5" y="401" width="9.6" height="15.0" fill="rgb(253,17,44)" rx="2" ry="2" />
+<text text-anchor="" x="264.48" y="411.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>write_pipe_buf (1 samples, 0.82%)</title><rect x="1170.7" y="369" width="9.6" height="15.0" fill="rgb(211,146,33)" rx="2" ry="2" />
+<text text-anchor="" x="1173.66" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>sys_mmap (14 samples, 11.48%)</title><rect x="1006.2" y="401" width="135.4" height="15.0" fill="rgb(231,17,7)" rx="2" ry="2" />
+<text text-anchor="" x="1009.23" y="411.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >sys_mmap</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__vasprintf_chk (1 samples, 0.82%)</title><rect x="938.5" y="257" width="9.7" height="15.0" fill="rgb(236,72,51)" rx="2" ry="2" />
+<text text-anchor="" x="941.52" y="267.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>smpi_main::{lambda (1 samples, 0.82%)</title><rect x="1170.7" y="545" width="9.6" height="15.0" fill="rgb(228,140,15)" rx="2" ry="2" />
+<text text-anchor="" x="1173.66" y="555.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>HPL_pdrpanllT (25 samples, 20.49%)</title><rect x="706.4" y="417" width="241.8" height="15.0" fill="rgb(207,227,47)" rx="2" ry="2" />
+<text text-anchor="" x="709.39" y="427.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >HPL_pdrpanllT</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>unmap_region (3 samples, 2.46%)</title><rect x="977.2" y="369" width="29.0" height="15.0" fill="rgb(220,85,36)" rx="2" ry="2" />
+<text text-anchor="" x="980.21" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >un..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>free (1 samples, 0.82%)</title><rect x="425.9" y="401" width="9.7" height="15.0" fill="rgb(241,17,23)" rx="2" ry="2" />
+<text text-anchor="" x="428.90" y="411.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>vfprintf (1 samples, 0.82%)</title><rect x="899.8" y="145" width="9.7" height="15.0" fill="rgb(210,34,37)" rx="2" ry="2" />
+<text text-anchor="" x="902.84" y="155.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>MPI_Wait (1 samples, 0.82%)</title><rect x="967.5" y="385" width="9.7" height="15.0" fill="rgb(224,170,21)" rx="2" ry="2" />
+<text text-anchor="" x="970.54" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_int_free (1 samples, 0.82%)</title><rect x="116.4" y="529" width="9.7" height="15.0" fill="rgb(229,70,7)" rx="2" ry="2" />
+<text text-anchor="" x="119.39" y="539.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>sys_open (1 samples, 0.82%)</title><rect x="619.3" y="497" width="9.7" height="15.0" fill="rgb(245,8,32)" rx="2" ry="2" />
+<text text-anchor="" x="622.34" y="507.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>simgrid::smpi::Request::wait (6 samples, 4.92%)</title><rect x="870.8" y="241" width="58.1" height="15.0" fill="rgb(212,44,40)" rx="2" ry="2" />
+<text text-anchor="" x="873.82" y="251.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >simgri..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>simgrid::smpi::Request::unref (1 samples, 0.82%)</title><rect x="909.5" y="209" width="9.7" height="15.0" fill="rgb(222,103,26)" rx="2" ry="2" />
+<text text-anchor="" x="912.51" y="219.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>hrtimer_wakeup (1 samples, 0.82%)</title><rect x="1170.7" y="81" width="9.6" height="15.0" fill="rgb(232,110,36)" rx="2" ry="2" />
+<text text-anchor="" x="1173.66" y="91.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__vma_link_rb (1 samples, 0.82%)</title><rect x="629.0" y="369" width="9.7" height="15.0" fill="rgb(239,33,15)" rx="2" ry="2" />
+<text text-anchor="" x="632.02" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>new_sync_write (1 samples, 0.82%)</title><rect x="1170.7" y="321" width="9.6" height="15.0" fill="rgb(233,7,44)" rx="2" ry="2" />
+<text text-anchor="" x="1173.66" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>sendfile (1 samples, 0.82%)</title><rect x="1170.7" y="529" width="9.6" height="15.0" fill="rgb(222,31,1)" rx="2" ry="2" />
+<text text-anchor="" x="1173.66" y="539.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__vfs_write (1 samples, 0.82%)</title><rect x="1170.7" y="337" width="9.6" height="15.0" fill="rgb(243,20,13)" rx="2" ry="2" />
+<text text-anchor="" x="1173.66" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>simgrid::surf::Action::unref (5 samples, 4.10%)</title><rect x="445.2" y="417" width="48.4" height="15.0" fill="rgb(233,29,31)" rx="2" ry="2" />
+<text text-anchor="" x="448.25" y="427.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >simg..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>HPL_bcast_1ring (6 samples, 4.92%)</title><rect x="648.4" y="433" width="58.0" height="15.0" fill="rgb(225,59,26)" rx="2" ry="2" />
+<text text-anchor="" x="651.36" y="443.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >HPL_bc..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__hrtimer_run_queues (1 samples, 0.82%)</title><rect x="1170.7" y="97" width="9.6" height="15.0" fill="rgb(222,185,17)" rx="2" ry="2" />
+<text text-anchor="" x="1173.66" y="107.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>simgrid::surf::HostCLM03Model::nextOccuringEvent (3 samples, 2.46%)</title><rect x="522.6" y="449" width="29.0" height="15.0" fill="rgb(236,88,35)" rx="2" ry="2" />
+<text text-anchor="" x="525.62" y="459.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >si..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>ecryptfs_decode_and_decrypt_filename (1 samples, 0.82%)</title><rect x="619.3" y="385" width="9.7" height="15.0" fill="rgb(253,77,34)" rx="2" ry="2" />
+<text text-anchor="" x="622.34" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_int_free (1 samples, 0.82%)</title><rect x="967.5" y="337" width="9.7" height="15.0" fill="rgb(221,26,52)" rx="2" ry="2" />
+<text text-anchor="" x="970.54" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>simgrid::kernel::activity::Comm::cleanupSurf (5 samples, 4.10%)</title><rect x="445.2" y="433" width="48.4" height="15.0" fill="rgb(234,15,10)" rx="2" ry="2" />
+<text text-anchor="" x="448.25" y="443.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >simg..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>PMPI_Wait (1 samples, 0.82%)</title><rect x="967.5" y="369" width="9.7" height="15.0" fill="rgb(225,133,15)" rx="2" ry="2" />
+<text text-anchor="" x="970.54" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bprintf (2 samples, 1.64%)</title><rect x="890.2" y="193" width="19.3" height="15.0" fill="rgb(208,4,46)" rx="2" ry="2" />
+<text text-anchor="" x="893.16" y="203.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>simgrid::smpi::Comm::unref (1 samples, 0.82%)</title><rect x="909.5" y="193" width="9.7" height="15.0" fill="rgb(251,141,25)" rx="2" ry="2" />
+<text text-anchor="" x="912.51" y="203.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>malloc (1 samples, 0.82%)</title><rect x="890.2" y="145" width="9.6" height="15.0" fill="rgb(246,158,48)" rx="2" ry="2" />
+<text text-anchor="" x="893.16" y="155.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::_M_replace (1 samples, 0.82%)</title><rect x="1180.3" y="545" width="9.7" height="15.0" fill="rgb(234,216,29)" rx="2" ry="2" />
+<text text-anchor="" x="1183.33" y="555.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>finish_task_switch (1 samples, 0.82%)</title><rect x="861.1" y="161" width="9.7" height="15.0" fill="rgb(220,99,42)" rx="2" ry="2" />
+<text text-anchor="" x="864.15" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>lmm_solve (2 samples, 1.64%)</title><rect x="532.3" y="401" width="19.3" height="15.0" fill="rgb(212,164,25)" rx="2" ry="2" />
+<text text-anchor="" x="535.30" y="411.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>HPL_pdpanllT (22 samples, 18.03%)</title><rect x="725.7" y="321" width="212.8" height="15.0" fill="rgb(218,41,10)" rx="2" ry="2" />
+<text text-anchor="" x="728.74" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >HPL_pdpanllT</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>int_ret_from_sys_call (2 samples, 1.64%)</title><rect x="290.5" y="529" width="19.3" height="15.0" fill="rgb(226,36,20)" rx="2" ry="2" />
+<text text-anchor="" x="293.49" y="539.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>MPI_Send (2 samples, 1.64%)</title><rect x="803.1" y="273" width="19.4" height="15.0" fill="rgb(208,157,6)" rx="2" ry="2" />
+<text text-anchor="" x="806.11" y="283.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>splice_direct_to_actor (1 samples, 0.82%)</title><rect x="1170.7" y="449" width="9.6" height="15.0" fill="rgb(208,221,37)" rx="2" ry="2" />
+<text text-anchor="" x="1173.66" y="459.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>handle_mm_fault (11 samples, 9.02%)</title><rect x="1035.2" y="305" width="106.4" height="15.0" fill="rgb(230,127,54)" rx="2" ry="2" />
+<text text-anchor="" x="1038.25" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >handle_mm_fault</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>xbt_cfg_get_double (1 samples, 0.82%)</title><rect x="687.0" y="369" width="9.7" height="15.0" fill="rgb(225,211,26)" rx="2" ry="2" />
+<text text-anchor="" x="690.05" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>vm_mmap_pgoff (1 samples, 0.82%)</title><rect x="629.0" y="433" width="9.7" height="15.0" fill="rgb(243,149,10)" rx="2" ry="2" />
+<text text-anchor="" x="632.02" y="443.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>PMPI_Send (1 samples, 0.82%)</title><rect x="716.1" y="273" width="9.6" height="15.0" fill="rgb(224,30,47)" rx="2" ry="2" />
+<text text-anchor="" x="719.07" y="283.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>SIMIX_comm_irecv (7 samples, 5.74%)</title><rect x="338.9" y="449" width="67.7" height="15.0" fill="rgb(248,207,1)" rx="2" ry="2" />
+<text text-anchor="" x="341.85" y="459.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >SIMIX_c..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>load_elf_binary (1 samples, 0.82%)</title><rect x="629.0" y="481" width="9.7" height="15.0" fill="rgb(216,104,29)" rx="2" ry="2" />
+<text text-anchor="" x="632.02" y="491.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>PMPI_Iprobe (5 samples, 4.10%)</title><rect x="648.4" y="401" width="48.3" height="15.0" fill="rgb(210,84,33)" rx="2" ry="2" />
+<text text-anchor="" x="651.36" y="411.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >PMPI..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>end_repeat_nmi (1 samples, 0.82%)</title><rect x="1006.2" y="145" width="9.7" height="15.0" fill="rgb(230,150,45)" rx="2" ry="2" />
+<text text-anchor="" x="1009.23" y="155.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>xbt_dict_get_elm_or_null (1 samples, 0.82%)</title><rect x="754.8" y="177" width="9.6" height="15.0" fill="rgb(224,34,46)" rx="2" ry="2" />
+<text text-anchor="" x="757.75" y="187.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>HPL_pdupdateTT (3 samples, 2.46%)</title><rect x="948.2" y="433" width="29.0" height="15.0" fill="rgb(205,128,14)" rx="2" ry="2" />
+<text text-anchor="" x="951.20" y="443.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >HP..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>load_elf_binary (2 samples, 1.64%)</title><rect x="39.0" y="481" width="19.4" height="15.0" fill="rgb(243,110,5)" rx="2" ry="2" />
+<text text-anchor="" x="42.02" y="491.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>lmm_update_variable_weight (2 samples, 1.64%)</title><rect x="551.6" y="417" width="19.4" height="15.0" fill="rgb(213,168,40)" rx="2" ry="2" />
+<text text-anchor="" x="554.64" y="427.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__clock_gettime (1 samples, 0.82%)</title><rect x="745.1" y="241" width="9.7" height="15.0" fill="rgb(222,124,19)" rx="2" ry="2" />
+<text text-anchor="" x="748.08" y="251.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>all (122 samples, 100%)</title><rect x="10.0" y="577" width="1180.0" height="15.0" fill="rgb(240,191,54)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="587.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>native_write_msr_safe (3 samples, 2.46%)</title><rect x="10.0" y="545" width="29.0" height="15.0" fill="rgb(220,74,15)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="555.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >na..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>sys_execve (1 samples, 0.82%)</title><rect x="629.0" y="529" width="9.7" height="15.0" fill="rgb(234,14,19)" rx="2" ry="2" />
+<text text-anchor="" x="632.02" y="539.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>search_binary_handler (2 samples, 1.64%)</title><rect x="39.0" y="497" width="19.4" height="15.0" fill="rgb(209,71,16)" rx="2" ry="2" />
+<text text-anchor="" x="42.02" y="507.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>return_from_execve (1 samples, 0.82%)</title><rect x="629.0" y="545" width="9.7" height="15.0" fill="rgb(210,107,7)" rx="2" ry="2" />
+<text text-anchor="" x="632.02" y="555.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>HPL_perm (1 samples, 0.82%)</title><rect x="957.9" y="385" width="9.6" height="15.0" fill="rgb(253,173,16)" rx="2" ry="2" />
+<text text-anchor="" x="960.87" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>simgrid::smpi::Group::rank (1 samples, 0.82%)</title><rect x="938.5" y="305" width="9.7" height="15.0" fill="rgb(226,137,43)" rx="2" ry="2" />
+<text text-anchor="" x="941.52" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>MPI_Wait (11 samples, 9.02%)</title><rect x="822.5" y="273" width="106.4" height="15.0" fill="rgb(232,95,24)" rx="2" ry="2" />
+<text text-anchor="" x="825.46" y="283.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >MPI_Wait</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_raw_spin_lock (1 samples, 0.82%)</title><rect x="251.8" y="417" width="9.7" height="15.0" fill="rgb(216,128,44)" rx="2" ry="2" />
+<text text-anchor="" x="254.80" y="427.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>pud_huge (1 samples, 0.82%)</title><rect x="1025.6" y="289" width="9.6" height="15.0" fill="rgb(237,220,52)" rx="2" ry="2" />
+<text text-anchor="" x="1028.57" y="299.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>HPL_pdfact (25 samples, 20.49%)</title><rect x="706.4" y="433" width="241.8" height="15.0" fill="rgb(226,148,2)" rx="2" ry="2" />
+<text text-anchor="" x="709.39" y="443.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >HPL_pdfact</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>HPL_dlocswpT (1 samples, 0.82%)</title><rect x="725.7" y="305" width="9.7" height="15.0" fill="rgb(234,181,35)" rx="2" ry="2" />
+<text text-anchor="" x="728.74" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_ZN7simgrid6kernel8activity4CommC1E17e_smx_comm_type_t@plt (1 samples, 0.82%)</title><rect x="203.4" y="545" width="9.7" height="15.0" fill="rgb(243,160,2)" rx="2" ry="2" />
+<text text-anchor="" x="206.44" y="555.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>simgrid::config::Config::operator[] (1 samples, 0.82%)</title><rect x="716.1" y="225" width="9.6" height="15.0" fill="rgb(254,139,23)" rx="2" ry="2" />
+<text text-anchor="" x="719.07" y="235.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>lmm_variable_free (1 samples, 0.82%)</title><rect x="493.6" y="417" width="9.7" height="15.0" fill="rgb(222,70,53)" rx="2" ry="2" />
+<text text-anchor="" x="496.61" y="427.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>SIMIX_context_self (1 samples, 0.82%)</title><rect x="928.9" y="241" width="9.6" height="15.0" fill="rgb(212,88,27)" rx="2" ry="2" />
+<text text-anchor="" x="931.85" y="251.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__cxxabiv1::__si_class_type_info::__do_dyncast (1 samples, 0.82%)</title><rect x="213.1" y="545" width="9.7" height="15.0" fill="rgb(251,61,23)" rx="2" ry="2" />
+<text text-anchor="" x="216.11" y="555.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>wake_up_process (1 samples, 0.82%)</title><rect x="1170.7" y="65" width="9.6" height="15.0" fill="rgb(248,63,36)" rx="2" ry="2" />
+<text text-anchor="" x="1173.66" y="75.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>open_verify.constprop.7 (1 samples, 0.82%)</title><rect x="619.3" y="545" width="9.7" height="15.0" fill="rgb(221,121,37)" rx="2" ry="2" />
+<text text-anchor="" x="622.34" y="555.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>do_filp_open (1 samples, 0.82%)</title><rect x="619.3" y="465" width="9.7" height="15.0" fill="rgb(215,32,18)" rx="2" ry="2" />
+<text text-anchor="" x="622.34" y="475.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__libc_start_main (26 samples, 21.31%)</title><rect x="338.9" y="529" width="251.4" height="15.0" fill="rgb(215,102,30)" rx="2" ry="2" />
+<text text-anchor="" x="341.85" y="539.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >__libc_start_main</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>simgrid::surf::Model::nextOccuringEventLazy (3 samples, 2.46%)</title><rect x="522.6" y="417" width="29.0" height="15.0" fill="rgb(221,202,1)" rx="2" ry="2" />
+<text text-anchor="" x="525.62" y="427.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >si..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>simgrid::s4u::Actor::host (1 samples, 0.82%)</title><rect x="658.0" y="369" width="9.7" height="15.0" fill="rgb(215,218,14)" rx="2" ry="2" />
+<text text-anchor="" x="661.03" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>free_pages_and_swap_cache (1 samples, 0.82%)</title><rect x="996.6" y="289" width="9.6" height="15.0" fill="rgb(214,10,30)" rx="2" ry="2" />
+<text text-anchor="" x="999.56" y="299.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>direct_splice_actor (1 samples, 0.82%)</title><rect x="1170.7" y="433" width="9.6" height="15.0" fill="rgb(241,100,16)" rx="2" ry="2" />
+<text text-anchor="" x="1173.66" y="443.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>default_file_splice_write (1 samples, 0.82%)</title><rect x="1170.7" y="417" width="9.6" height="15.0" fill="rgb(254,214,22)" rx="2" ry="2" />
+<text text-anchor="" x="1173.66" y="427.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>native_irq_return_iret (1 samples, 0.82%)</title><rect x="290.5" y="337" width="9.7" height="15.0" fill="rgb(240,78,15)" rx="2" ry="2" />
+<text text-anchor="" x="293.49" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>xbt_dict_get_elm_or_null (1 samples, 0.82%)</title><rect x="716.1" y="209" width="9.6" height="15.0" fill="rgb(224,56,30)" rx="2" ry="2" />
+<text text-anchor="" x="719.07" y="219.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>smpi_shared_malloc (17 samples, 13.93%)</title><rect x="1006.2" y="465" width="164.5" height="15.0" fill="rgb(213,12,38)" rx="2" ry="2" />
+<text text-anchor="" x="1009.23" y="475.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >smpi_shared_malloc</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>native_write_msr_safe (1 samples, 0.82%)</title><rect x="48.7" y="353" width="9.7" height="15.0" fill="rgb(254,215,6)" rx="2" ry="2" />
+<text text-anchor="" x="51.69" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>SIMIX_simcall_handle (8 samples, 6.56%)</title><rect x="338.9" y="465" width="77.3" height="15.0" fill="rgb(206,25,36)" rx="2" ry="2" />
+<text text-anchor="" x="341.85" y="475.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >SIMIX_si..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bprintf (1 samples, 0.82%)</title><rect x="938.5" y="289" width="9.7" height="15.0" fill="rgb(215,41,43)" rx="2" ry="2" />
+<text text-anchor="" x="941.52" y="299.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>setkey (1 samples, 0.82%)</title><rect x="619.3" y="321" width="9.7" height="15.0" fill="rgb(229,39,50)" rx="2" ry="2" />
+<text text-anchor="" x="622.34" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>lmm_update_modified_set_rec (2 samples, 1.64%)</title><rect x="551.6" y="369" width="19.4" height="15.0" fill="rgb(205,197,40)" rx="2" ry="2" />
+<text text-anchor="" x="554.64" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>do_execveat_common.isra.33 (2 samples, 1.64%)</title><rect x="39.0" y="513" width="19.4" height="15.0" fill="rgb(249,91,38)" rx="2" ry="2" />
+<text text-anchor="" x="42.02" y="523.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>simgrid::surf::NetworkSmpiModel::latencyFactor (1 samples, 0.82%)</title><rect x="377.5" y="401" width="9.7" height="15.0" fill="rgb(226,147,3)" rx="2" ry="2" />
+<text text-anchor="" x="380.54" y="411.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>finish_task_switch (2 samples, 1.64%)</title><rect x="1006.2" y="257" width="19.4" height="15.0" fill="rgb(211,198,33)" rx="2" ry="2" />
+<text text-anchor="" x="1009.23" y="267.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>SIMIX_process_self (1 samples, 0.82%)</title><rect x="764.4" y="225" width="9.7" height="15.0" fill="rgb(241,143,27)" rx="2" ry="2" />
+<text text-anchor="" x="767.43" y="235.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>mem_cgroup_begin_page_stat (1 samples, 0.82%)</title><rect x="986.9" y="289" width="9.7" height="15.0" fill="rgb(219,187,28)" rx="2" ry="2" />
+<text text-anchor="" x="989.89" y="299.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>simgrid::surf::NetworkCm02Model::communicate (5 samples, 4.10%)</title><rect x="338.9" y="417" width="48.3" height="15.0" fill="rgb(246,109,7)" rx="2" ry="2" />
+<text text-anchor="" x="341.85" y="427.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >simg..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>HPL_pdrpanllT (25 samples, 20.49%)</title><rect x="706.4" y="385" width="241.8" height="15.0" fill="rgb(234,201,18)" rx="2" ry="2" />
+<text text-anchor="" x="709.39" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >HPL_pdrpanllT</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__get_user_pages (14 samples, 11.48%)</title><rect x="1006.2" y="321" width="135.4" height="15.0" fill="rgb(226,139,9)" rx="2" ry="2" />
+<text text-anchor="" x="1009.23" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >__get_user_pages</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>lmm_update_modified_set_rec (1 samples, 0.82%)</title><rect x="474.3" y="369" width="9.6" height="15.0" fill="rgb(206,199,46)" rx="2" ry="2" />
+<text text-anchor="" x="477.26" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__GI___munmap (3 samples, 2.46%)</title><rect x="977.2" y="449" width="29.0" height="15.0" fill="rgb(206,1,35)" rx="2" ry="2" />
+<text text-anchor="" x="980.21" y="459.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >__..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>page_remove_rmap (2 samples, 1.64%)</title><rect x="977.2" y="305" width="19.4" height="15.0" fill="rgb(223,162,16)" rx="2" ry="2" />
+<text text-anchor="" x="980.21" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>native_write_msr_safe (3 samples, 2.46%)</title><rect x="832.1" y="241" width="29.0" height="15.0" fill="rgb(219,90,18)" rx="2" ry="2" />
+<text text-anchor="" x="835.13" y="251.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >na..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__schedule (2 samples, 1.64%)</title><rect x="1006.2" y="273" width="19.4" height="15.0" fill="rgb(214,158,18)" rx="2" ry="2" />
+<text text-anchor="" x="1009.23" y="283.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>HPL_rollT (1 samples, 0.82%)</title><rect x="967.5" y="401" width="9.7" height="15.0" fill="rgb(250,64,52)" rx="2" ry="2" />
+<text text-anchor="" x="970.54" y="411.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>simgrid::kernel::activity::Exec::post (1 samples, 0.82%)</title><rect x="493.6" y="449" width="9.7" height="15.0" fill="rgb(212,32,44)" rx="2" ry="2" />
+<text text-anchor="" x="496.61" y="459.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>HPL_pipid (1 samples, 0.82%)</title><rect x="948.2" y="401" width="9.7" height="15.0" fill="rgb(249,43,26)" rx="2" ry="2" />
+<text text-anchor="" x="951.20" y="411.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>simgrid::s4u::Actor::self (1 samples, 0.82%)</title><rect x="880.5" y="209" width="9.7" height="15.0" fill="rgb(231,178,47)" rx="2" ry="2" />
+<text text-anchor="" x="883.49" y="219.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__cxxabiv1::__si_class_type_info::__do_dyncast (1 samples, 0.82%)</title><rect x="106.7" y="529" width="9.7" height="15.0" fill="rgb(251,34,5)" rx="2" ry="2" />
+<text text-anchor="" x="109.72" y="539.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>unmap_vmas (3 samples, 2.46%)</title><rect x="977.2" y="353" width="29.0" height="15.0" fill="rgb(205,0,35)" rx="2" ry="2" />
+<text text-anchor="" x="980.21" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >un..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>malloc (1 samples, 0.82%)</title><rect x="396.9" y="417" width="9.7" height="15.0" fill="rgb(205,111,35)" rx="2" ry="2" />
+<text text-anchor="" x="399.89" y="427.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>free (1 samples, 0.82%)</title><rect x="445.2" y="401" width="9.7" height="15.0" fill="rgb(214,148,34)" rx="2" ry="2" />
+<text text-anchor="" x="448.25" y="411.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>malloc_consolidate (1 samples, 0.82%)</title><rect x="812.8" y="177" width="9.7" height="15.0" fill="rgb(223,2,24)" rx="2" ry="2" />
+<text text-anchor="" x="815.79" y="187.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>simgrid::kernel::activity::ActivityImpl::unref (1 samples, 0.82%)</title><rect x="425.9" y="417" width="9.7" height="15.0" fill="rgb(230,160,15)" rx="2" ry="2" />
+<text text-anchor="" x="428.90" y="427.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>mmap_region (1 samples, 0.82%)</title><rect x="629.0" y="401" width="9.7" height="15.0" fill="rgb(205,101,11)" rx="2" ry="2" />
+<text text-anchor="" x="632.02" y="411.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>simgrid::smpi::Request::irecv (1 samples, 0.82%)</title><rect x="754.8" y="241" width="9.6" height="15.0" fill="rgb(230,183,23)" rx="2" ry="2" />
+<text text-anchor="" x="757.75" y="251.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>HPL_pdmxswp (1 samples, 0.82%)</title><rect x="716.1" y="321" width="9.6" height="15.0" fill="rgb(233,74,16)" rx="2" ry="2" />
+<text text-anchor="" x="719.07" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>entry_SYSCALL_64_fastpath (3 samples, 2.46%)</title><rect x="977.2" y="433" width="29.0" height="15.0" fill="rgb(221,197,51)" rx="2" ry="2" />
+<text text-anchor="" x="980.21" y="443.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >en..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_int_free (1 samples, 0.82%)</title><rect x="435.6" y="385" width="9.6" height="15.0" fill="rgb(225,17,22)" rx="2" ry="2" />
+<text text-anchor="" x="438.57" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>lmm_enable_var (2 samples, 1.64%)</title><rect x="551.6" y="401" width="19.4" height="15.0" fill="rgb(210,57,16)" rx="2" ry="2" />
+<text text-anchor="" x="554.64" y="411.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>printf_positional (1 samples, 0.82%)</title><rect x="938.5" y="225" width="9.7" height="15.0" fill="rgb(232,2,13)" rx="2" ry="2" />
+<text text-anchor="" x="941.52" y="235.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>splice_from_pipe (1 samples, 0.82%)</title><rect x="1170.7" y="401" width="9.6" height="15.0" fill="rgb(242,32,27)" rx="2" ry="2" />
+<text text-anchor="" x="1173.66" y="411.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>simgrid::surf::Action::heapInsert (1 samples, 0.82%)</title><rect x="367.9" y="401" width="9.6" height="15.0" fill="rgb(244,63,20)" rx="2" ry="2" />
+<text text-anchor="" x="370.87" y="411.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>simgrid::kernel::routing::NetZoneImpl::getGlobalRoute (2 samples, 1.64%)</title><rect x="348.5" y="385" width="19.4" height="15.0" fill="rgb(211,147,7)" rx="2" ry="2" />
+<text text-anchor="" x="351.52" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>simgrid::kernel::context::RawContext::wrapper (55 samples, 45.08%)</title><rect x="638.7" y="545" width="532.0" height="15.0" fill="rgb(252,64,35)" rx="2" ry="2" />
+<text text-anchor="" x="641.69" y="555.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >simgrid::kernel::context::RawContext::wrapper</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>x86_pmu_enable (2 samples, 1.64%)</title><rect x="290.5" y="385" width="19.3" height="15.0" fill="rgb(253,200,44)" rx="2" ry="2" />
+<text text-anchor="" x="293.49" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>return_from_execve (2 samples, 1.64%)</title><rect x="39.0" y="545" width="19.4" height="15.0" fill="rgb(243,66,33)" rx="2" ry="2" />
+<text text-anchor="" x="42.02" y="555.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>ablk_encrypt (1 samples, 0.82%)</title><rect x="1170.7" y="193" width="9.6" height="15.0" fill="rgb(219,157,36)" rx="2" ry="2" />
+<text text-anchor="" x="1173.66" y="203.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>posix_cpu_clock_get (4 samples, 3.28%)</title><rect x="251.8" y="481" width="38.7" height="15.0" fill="rgb(215,214,38)" rx="2" ry="2" />
+<text text-anchor="" x="254.80" y="491.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >pos..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>elf_map (1 samples, 0.82%)</title><rect x="629.0" y="465" width="9.7" height="15.0" fill="rgb(227,208,21)" rx="2" ry="2" />
+<text text-anchor="" x="632.02" y="475.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>do_sendfile (1 samples, 0.82%)</title><rect x="1170.7" y="481" width="9.6" height="15.0" fill="rgb(244,134,15)" rx="2" ry="2" />
+<text text-anchor="" x="1173.66" y="491.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_start (26 samples, 21.31%)</title><rect x="338.9" y="545" width="251.4" height="15.0" fill="rgb(219,194,23)" rx="2" ry="2" />
+<text text-anchor="" x="341.85" y="555.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >_start</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__mm_populate (14 samples, 11.48%)</title><rect x="1006.2" y="353" width="135.4" height="15.0" fill="rgb(246,75,4)" rx="2" ry="2" />
+<text text-anchor="" x="1009.23" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >__mm_populate</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>SIMIX_context_self (1 samples, 0.82%)</title><rect x="764.4" y="209" width="9.7" height="15.0" fill="rgb(229,229,45)" rx="2" ry="2" />
+<text text-anchor="" x="767.43" y="219.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__schedule (1 samples, 0.82%)</title><rect x="861.1" y="177" width="9.7" height="15.0" fill="rgb(246,194,31)" rx="2" ry="2" />
+<text text-anchor="" x="864.15" y="187.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>simcall_HANDLER_comm_isend (1 samples, 0.82%)</title><rect x="155.1" y="529" width="9.7" height="15.0" fill="rgb(248,190,32)" rx="2" ry="2" />
+<text text-anchor="" x="158.08" y="539.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>hrtimer_interrupt (1 samples, 0.82%)</title><rect x="1170.7" y="113" width="9.6" height="15.0" fill="rgb(252,99,21)" rx="2" ry="2" />
+<text text-anchor="" x="1173.66" y="123.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>entry_SYSCALL_64_after_swapgs (1 samples, 0.82%)</title><rect x="232.5" y="529" width="9.6" height="15.0" fill="rgb(241,4,21)" rx="2" ry="2" />
+<text text-anchor="" x="235.46" y="539.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>MPI_Iprobe (5 samples, 4.10%)</title><rect x="648.4" y="417" width="48.3" height="15.0" fill="rgb(209,161,41)" rx="2" ry="2" />
+<text text-anchor="" x="651.36" y="427.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >MPI_..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>native_sched_clock (2 samples, 1.64%)</title><rect x="271.1" y="369" width="19.4" height="15.0" fill="rgb(245,16,38)" rx="2" ry="2" />
+<text text-anchor="" x="274.15" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>do_splice_direct (1 samples, 0.82%)</title><rect x="1170.7" y="465" width="9.6" height="15.0" fill="rgb(216,160,13)" rx="2" ry="2" />
+<text text-anchor="" x="1173.66" y="475.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>simgrid::surf::Model::updateActionsState (2 samples, 1.64%)</title><rect x="551.6" y="449" width="19.4" height="15.0" fill="rgb(253,81,21)" rx="2" ry="2" />
+<text text-anchor="" x="554.64" y="459.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>syscall_return_slowpath (2 samples, 1.64%)</title><rect x="290.5" y="513" width="19.3" height="15.0" fill="rgb(213,223,44)" rx="2" ry="2" />
+<text text-anchor="" x="293.49" y="523.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>malloc (1 samples, 0.82%)</title><rect x="812.8" y="209" width="9.7" height="15.0" fill="rgb(216,84,10)" rx="2" ry="2" />
+<text text-anchor="" x="815.79" y="219.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>SIMIX_process_self (1 samples, 0.82%)</title><rect x="928.9" y="257" width="9.6" height="15.0" fill="rgb(245,115,42)" rx="2" ry="2" />
+<text text-anchor="" x="931.85" y="267.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bprintf (1 samples, 0.82%)</title><rect x="677.4" y="353" width="9.6" height="15.0" fill="rgb(245,19,44)" rx="2" ry="2" />
+<text text-anchor="" x="680.38" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>simgrid::config::Config::operator[] (1 samples, 0.82%)</title><rect x="793.4" y="209" width="9.7" height="15.0" fill="rgb(236,172,53)" rx="2" ry="2" />
+<text text-anchor="" x="796.44" y="219.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>simcall_execution_start (1 samples, 0.82%)</title><rect x="783.8" y="193" width="9.6" height="15.0" fill="rgb(222,195,38)" rx="2" ry="2" />
+<text text-anchor="" x="786.77" y="203.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__kernel_write (1 samples, 0.82%)</title><rect x="1170.7" y="353" width="9.6" height="15.0" fill="rgb(211,180,13)" rx="2" ry="2" />
+<text text-anchor="" x="1173.66" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>simgrid::smpi::Request::src (1 samples, 0.82%)</title><rect x="164.8" y="529" width="9.6" height="15.0" fill="rgb(238,140,1)" rx="2" ry="2" />
+<text text-anchor="" x="167.75" y="539.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>smpi_bench_end.part.50.lto_priv.1020 (1 samples, 0.82%)</title><rect x="716.1" y="257" width="9.6" height="15.0" fill="rgb(235,50,53)" rx="2" ry="2" />
+<text text-anchor="" x="719.07" y="267.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>perf_pmu_enable.part.89 (1 samples, 0.82%)</title><rect x="861.1" y="113" width="9.7" height="15.0" fill="rgb(254,15,45)" rx="2" ry="2" />
+<text text-anchor="" x="864.15" y="123.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>sys_execve (2 samples, 1.64%)</title><rect x="39.0" y="529" width="19.4" height="15.0" fill="rgb(230,25,47)" rx="2" ry="2" />
+<text text-anchor="" x="42.02" y="539.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>intel_pmu_enable_all (2 samples, 1.64%)</title><rect x="39.0" y="385" width="19.4" height="15.0" fill="rgb(215,42,48)" rx="2" ry="2" />
+<text text-anchor="" x="42.02" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>local_apic_timer_interrupt (1 samples, 0.82%)</title><rect x="1170.7" y="129" width="9.6" height="15.0" fill="rgb(224,50,18)" rx="2" ry="2" />
+<text text-anchor="" x="1173.66" y="139.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>HPL_sdrv (20 samples, 16.39%)</title><rect x="745.1" y="289" width="193.4" height="15.0" fill="rgb(245,162,36)" rx="2" ry="2" />
+<text text-anchor="" x="748.08" y="299.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >HPL_sdrv</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>unmap_single_vma (3 samples, 2.46%)</title><rect x="977.2" y="337" width="29.0" height="15.0" fill="rgb(212,75,26)" rx="2" ry="2" />
+<text text-anchor="" x="980.21" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >un..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>copy_user_enhanced_fast_string (1 samples, 0.82%)</title><rect x="242.1" y="513" width="9.7" height="15.0" fill="rgb(211,85,2)" rx="2" ry="2" />
+<text text-anchor="" x="245.13" y="523.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>simgrid::smpi::Process::sampling (1 samples, 0.82%)</title><rect x="774.1" y="225" width="9.7" height="15.0" fill="rgb(238,90,16)" rx="2" ry="2" />
+<text text-anchor="" x="777.10" y="235.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>native_write_msr_safe (1 samples, 0.82%)</title><rect x="300.2" y="337" width="9.6" height="15.0" fill="rgb(253,142,44)" rx="2" ry="2" />
+<text text-anchor="" x="303.16" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>entry_SYSCALL_64 (1 samples, 0.82%)</title><rect x="222.8" y="529" width="9.7" height="15.0" fill="rgb(215,150,30)" rx="2" ry="2" />
+<text text-anchor="" x="225.79" y="539.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>smpi_execute (1 samples, 0.82%)</title><rect x="783.8" y="225" width="9.6" height="15.0" fill="rgb(244,115,7)" rx="2" ry="2" />
+<text text-anchor="" x="786.77" y="235.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>ecryptfs_encrypt_page (1 samples, 0.82%)</title><rect x="1170.7" y="241" width="9.6" height="15.0" fill="rgb(207,109,36)" rx="2" ry="2" />
+<text text-anchor="" x="1173.66" y="251.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>intel_pmu_enable_all (2 samples, 1.64%)</title><rect x="1006.2" y="177" width="19.4" height="15.0" fill="rgb(214,225,6)" rx="2" ry="2" />
+<text text-anchor="" x="1009.23" y="187.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>sys_munmap (3 samples, 2.46%)</title><rect x="977.2" y="417" width="29.0" height="15.0" fill="rgb(250,80,21)" rx="2" ry="2" />
+<text text-anchor="" x="980.21" y="427.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >sy..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__vasprintf_chk (2 samples, 1.64%)</title><rect x="890.2" y="161" width="19.3" height="15.0" fill="rgb(214,205,43)" rx="2" ry="2" />
+<text text-anchor="" x="893.16" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>simgrid::kernel::routing::FatTreeZone::getLocalRoute (1 samples, 0.82%)</title><rect x="358.2" y="369" width="9.7" height="15.0" fill="rgb(233,206,42)" rx="2" ry="2" />
+<text text-anchor="" x="361.20" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__vdso_clock_gettime (1 samples, 0.82%)</title><rect x="745.1" y="225" width="9.7" height="15.0" fill="rgb(225,35,29)" rx="2" ry="2" />
+<text text-anchor="" x="748.08" y="235.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>smpi_trace_set_call_location (1 samples, 0.82%)</title><rect x="696.7" y="417" width="9.7" height="15.0" fill="rgb(214,127,13)" rx="2" ry="2" />
+<text text-anchor="" x="699.72" y="427.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>simgrid::smpi::Request::iprobe (5 samples, 4.10%)</title><rect x="648.4" y="385" width="48.3" height="15.0" fill="rgb(223,218,21)" rx="2" ry="2" />
+<text text-anchor="" x="651.36" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >simg..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>sys_sendfile64 (1 samples, 0.82%)</title><rect x="1170.7" y="497" width="9.6" height="15.0" fill="rgb(214,224,41)" rx="2" ry="2" />
+<text text-anchor="" x="1173.66" y="507.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>xbt_cfg_get_string (1 samples, 0.82%)</title><rect x="716.1" y="241" width="9.6" height="15.0" fill="rgb(227,120,52)" rx="2" ry="2" />
+<text text-anchor="" x="719.07" y="251.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>main (55 samples, 45.08%)</title><rect x="638.7" y="497" width="532.0" height="15.0" fill="rgb(230,104,42)" rx="2" ry="2" />
+<text text-anchor="" x="641.69" y="507.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >main</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>HPL_plindx1 (1 samples, 0.82%)</title><rect x="957.9" y="401" width="9.6" height="15.0" fill="rgb(226,107,23)" rx="2" ry="2" />
+<text text-anchor="" x="960.87" y="411.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>setkey (1 samples, 0.82%)</title><rect x="619.3" y="353" width="9.7" height="15.0" fill="rgb(211,53,46)" rx="2" ry="2" />
+<text text-anchor="" x="622.34" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>HPL_pdrpanllT (24 samples, 19.67%)</title><rect x="716.1" y="353" width="232.1" height="15.0" fill="rgb(247,145,28)" rx="2" ry="2" />
+<text text-anchor="" x="719.07" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >HPL_pdrpanllT</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>surf_model_extract_done_action_set (1 samples, 0.82%)</title><rect x="193.8" y="529" width="9.6" height="15.0" fill="rgb(205,147,39)" rx="2" ry="2" />
+<text text-anchor="" x="196.77" y="539.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>release_pages (1 samples, 0.82%)</title><rect x="996.6" y="273" width="9.6" height="15.0" fill="rgb(222,72,17)" rx="2" ry="2" />
+<text text-anchor="" x="999.56" y="283.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>std::__cxx11::list&lt;simgrid::kernel::activity::ActivityImpl*, std::allocator&lt;simgrid::kernel::activity::ActivityImpl*&gt; &gt;::remove (1 samples, 0.82%)</title><rect x="435.6" y="417" width="9.6" height="15.0" fill="rgb(225,9,27)" rx="2" ry="2" />
+<text text-anchor="" x="438.57" y="427.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>prepare_exit_to_usermode (1 samples, 0.82%)</title><rect x="861.1" y="225" width="9.7" height="15.0" fill="rgb(225,90,29)" rx="2" ry="2" />
+<text text-anchor="" x="864.15" y="235.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_int_malloc (1 samples, 0.82%)</title><rect x="890.2" y="129" width="9.6" height="15.0" fill="rgb(216,99,17)" rx="2" ry="2" />
+<text text-anchor="" x="893.16" y="139.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>tlb_flush_mmu_free (1 samples, 0.82%)</title><rect x="996.6" y="305" width="9.6" height="15.0" fill="rgb(205,206,21)" rx="2" ry="2" />
+<text text-anchor="" x="999.56" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>simgrid::s4u::Host::routeTo (2 samples, 1.64%)</title><rect x="348.5" y="401" width="19.4" height="15.0" fill="rgb(251,116,52)" rx="2" ry="2" />
+<text text-anchor="" x="351.52" y="411.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>private_sleep (1 samples, 0.82%)</title><rect x="938.5" y="321" width="9.7" height="15.0" fill="rgb(211,152,0)" rx="2" ry="2" />
+<text text-anchor="" x="941.52" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>retint_user (1 samples, 0.82%)</title><rect x="861.1" y="241" width="9.7" height="15.0" fill="rgb(242,35,31)" rx="2" ry="2" />
+<text text-anchor="" x="864.15" y="251.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bvprintf (2 samples, 1.64%)</title><rect x="890.2" y="177" width="19.3" height="15.0" fill="rgb(223,25,32)" rx="2" ry="2" />
+<text text-anchor="" x="893.16" y="187.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>simgrid::kernel::activity::Comm::post (7 samples, 5.74%)</title><rect x="425.9" y="449" width="67.7" height="15.0" fill="rgb(253,61,51)" rx="2" ry="2" />
+<text text-anchor="" x="428.90" y="459.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >simgrid..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>realloc (1 samples, 0.82%)</title><rect x="338.9" y="385" width="9.6" height="15.0" fill="rgb(218,57,54)" rx="2" ry="2" />
+<text text-anchor="" x="341.85" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>SIMIX_run (26 samples, 21.31%)</title><rect x="338.9" y="497" width="251.4" height="15.0" fill="rgb(228,79,47)" rx="2" ry="2" />
+<text text-anchor="" x="341.85" y="507.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >SIMIX_run</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>link_path_walk (1 samples, 0.82%)</title><rect x="619.3" y="433" width="9.7" height="15.0" fill="rgb(208,132,39)" rx="2" ry="2" />
+<text text-anchor="" x="622.34" y="443.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>smpi_shared_malloc_partial (17 samples, 13.93%)</title><rect x="1006.2" y="449" width="164.5" height="15.0" fill="rgb(238,15,45)" rx="2" ry="2" />
+<text text-anchor="" x="1009.23" y="459.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >smpi_shared_malloc_pa..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>HPL_sdrv (1 samples, 0.82%)</title><rect x="716.1" y="305" width="9.6" height="15.0" fill="rgb(215,4,15)" rx="2" ry="2" />
+<text text-anchor="" x="719.07" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>SIMIX_comm_start (5 samples, 4.10%)</title><rect x="338.9" y="433" width="48.3" height="15.0" fill="rgb(218,9,12)" rx="2" ry="2" />
+<text text-anchor="" x="341.85" y="443.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >SIMI..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>xbt_dict_get_elm_or_null (1 samples, 0.82%)</title><rect x="793.4" y="193" width="9.7" height="15.0" fill="rgb(239,181,34)" rx="2" ry="2" />
+<text text-anchor="" x="796.44" y="203.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>generic_file_write_iter (1 samples, 0.82%)</title><rect x="1170.7" y="305" width="9.6" height="15.0" fill="rgb(249,126,53)" rx="2" ry="2" />
+<text text-anchor="" x="1173.66" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>native_write_cr2 (1 samples, 0.82%)</title><rect x="1006.2" y="113" width="9.7" height="15.0" fill="rgb(210,187,17)" rx="2" ry="2" />
+<text text-anchor="" x="1009.23" y="123.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>simgrid::smpi::Request::finish_wait (5 samples, 4.10%)</title><rect x="870.8" y="225" width="48.4" height="15.0" fill="rgb(240,195,3)" rx="2" ry="2" />
+<text text-anchor="" x="873.82" y="235.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >simg..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__generic_file_write_iter (1 samples, 0.82%)</title><rect x="1170.7" y="289" width="9.6" height="15.0" fill="rgb(241,37,37)" rx="2" ry="2" />
+<text text-anchor="" x="1173.66" y="299.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>perf (5 samples, 4.10%)</title><rect x="10.0" y="561" width="48.4" height="15.0" fill="rgb(224,104,49)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="571.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >perf</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>do_nmi (1 samples, 0.82%)</title><rect x="1006.2" y="129" width="9.7" height="15.0" fill="rgb(228,71,8)" rx="2" ry="2" />
+<text text-anchor="" x="1009.23" y="139.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_int_free (1 samples, 0.82%)</title><rect x="425.9" y="385" width="9.7" height="15.0" fill="rgb(248,170,48)" rx="2" ry="2" />
+<text text-anchor="" x="428.90" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>open64 (1 samples, 0.82%)</title><rect x="619.3" y="529" width="9.7" height="15.0" fill="rgb(209,177,38)" rx="2" ry="2" />
+<text text-anchor="" x="622.34" y="539.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>smpi_run_entry_point (55 samples, 45.08%)</title><rect x="638.7" y="513" width="532.0" height="15.0" fill="rgb(233,205,21)" rx="2" ry="2" />
+<text text-anchor="" x="641.69" y="523.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >smpi_run_entry_point</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>entry_SYSCALL_64_fastpath (14 samples, 11.48%)</title><rect x="1006.2" y="417" width="135.4" height="15.0" fill="rgb(233,227,22)" rx="2" ry="2" />
+<text text-anchor="" x="1009.23" y="427.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >entry_SYSCALL_64_..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>simgrid::smpi::Request::start (1 samples, 0.82%)</title><rect x="754.8" y="225" width="9.6" height="15.0" fill="rgb(246,92,40)" rx="2" ry="2" />
+<text text-anchor="" x="757.75" y="235.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>do_execveat_common.isra.33 (1 samples, 0.82%)</title><rect x="629.0" y="513" width="9.7" height="15.0" fill="rgb(232,217,9)" rx="2" ry="2" />
+<text text-anchor="" x="632.02" y="523.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>path_openat (1 samples, 0.82%)</title><rect x="619.3" y="449" width="9.7" height="15.0" fill="rgb(214,47,2)" rx="2" ry="2" />
+<text text-anchor="" x="622.34" y="459.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>filemap_map_pages (11 samples, 9.02%)</title><rect x="1035.2" y="289" width="106.4" height="15.0" fill="rgb(230,112,44)" rx="2" ry="2" />
+<text text-anchor="" x="1038.25" y="299.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >filemap_map_p..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>lmm_variable_free (3 samples, 2.46%)</title><rect x="454.9" y="401" width="29.0" height="15.0" fill="rgb(209,229,31)" rx="2" ry="2" />
+<text text-anchor="" x="457.92" y="411.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >lm..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__intel_pmu_enable_all (2 samples, 1.64%)</title><rect x="290.5" y="353" width="19.3" height="15.0" fill="rgb(250,112,10)" rx="2" ry="2" />
+<text text-anchor="" x="293.49" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_cond_resched (2 samples, 1.64%)</title><rect x="1006.2" y="305" width="19.4" height="15.0" fill="rgb(230,227,48)" rx="2" ry="2" />
+<text text-anchor="" x="1009.23" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>printf_positional (1 samples, 0.82%)</title><rect x="677.4" y="289" width="9.6" height="15.0" fill="rgb(247,148,32)" rx="2" ry="2" />
+<text text-anchor="" x="680.38" y="299.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>perf_event_exec (2 samples, 1.64%)</title><rect x="39.0" y="449" width="19.4" height="15.0" fill="rgb(229,219,34)" rx="2" ry="2" />
+<text text-anchor="" x="42.02" y="459.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>ecryptfs_write_end (1 samples, 0.82%)</title><rect x="1170.7" y="257" width="9.6" height="15.0" fill="rgb(213,172,48)" rx="2" ry="2" />
+<text text-anchor="" x="1173.66" y="267.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>entry_SYSCALL_64_fastpath (5 samples, 4.10%)</title><rect x="242.1" y="529" width="48.4" height="15.0" fill="rgb(223,201,7)" rx="2" ry="2" />
+<text text-anchor="" x="245.13" y="539.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >entr..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>perf_event_context_sched_in (1 samples, 0.82%)</title><rect x="861.1" y="129" width="9.7" height="15.0" fill="rgb(237,207,32)" rx="2" ry="2" />
+<text text-anchor="" x="864.15" y="139.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>perf_event_context_sched_in (2 samples, 1.64%)</title><rect x="1006.2" y="225" width="19.4" height="15.0" fill="rgb(218,46,24)" rx="2" ry="2" />
+<text text-anchor="" x="1009.23" y="235.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>smpi_bench_end.part.50.lto_priv.1020 (4 samples, 3.28%)</title><rect x="764.4" y="241" width="38.7" height="15.0" fill="rgb(232,114,16)" rx="2" ry="2" />
+<text text-anchor="" x="767.43" y="251.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >smp..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>xbt_dynar_reset (1 samples, 0.82%)</title><rect x="571.0" y="465" width="9.7" height="15.0" fill="rgb(209,153,36)" rx="2" ry="2" />
+<text text-anchor="" x="573.98" y="475.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>x86_pmu_enable (2 samples, 1.64%)</title><rect x="1006.2" y="193" width="19.4" height="15.0" fill="rgb(241,197,44)" rx="2" ry="2" />
+<text text-anchor="" x="1009.23" y="203.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>HPL_pdrpanllT (25 samples, 20.49%)</title><rect x="706.4" y="401" width="241.8" height="15.0" fill="rgb(244,217,49)" rx="2" ry="2" />
+<text text-anchor="" x="709.39" y="411.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >HPL_pdrpanllT</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>simgrid::surf::Action::unref (1 samples, 0.82%)</title><rect x="493.6" y="433" width="9.7" height="15.0" fill="rgb(254,103,20)" rx="2" ry="2" />
+<text text-anchor="" x="496.61" y="443.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>HPL_pdmxswp (21 samples, 17.21%)</title><rect x="735.4" y="305" width="203.1" height="15.0" fill="rgb(241,216,51)" rx="2" ry="2" />
+<text text-anchor="" x="738.41" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >HPL_pdmxswp</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>HPL_pdtest (55 samples, 45.08%)</title><rect x="638.7" y="481" width="532.0" height="15.0" fill="rgb(207,96,45)" rx="2" ry="2" />
+<text text-anchor="" x="641.69" y="491.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >HPL_pdtest</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_int_free (1 samples, 0.82%)</title><rect x="445.2" y="385" width="9.7" height="15.0" fill="rgb(223,128,35)" rx="2" ry="2" />
+<text text-anchor="" x="448.25" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>unmap_page_range (3 samples, 2.46%)</title><rect x="977.2" y="321" width="29.0" height="15.0" fill="rgb(245,179,5)" rx="2" ry="2" />
+<text text-anchor="" x="980.21" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >un..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>SIMIX_wake_processes (10 samples, 8.20%)</title><rect x="416.2" y="465" width="96.8" height="15.0" fill="rgb(237,57,28)" rx="2" ry="2" />
+<text text-anchor="" x="419.23" y="475.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >SIMIX_wake_..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>thread_cpu_clock_get (4 samples, 3.28%)</title><rect x="251.8" y="497" width="38.7" height="15.0" fill="rgb(235,153,32)" rx="2" ry="2" />
+<text text-anchor="" x="254.80" y="507.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >thr..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bvprintf (1 samples, 0.82%)</title><rect x="938.5" y="273" width="9.7" height="15.0" fill="rgb(252,226,2)" rx="2" ry="2" />
+<text text-anchor="" x="941.52" y="283.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__perf_event_task_sched_in (2 samples, 1.64%)</title><rect x="290.5" y="433" width="19.3" height="15.0" fill="rgb(227,44,24)" rx="2" ry="2" />
+<text text-anchor="" x="293.49" y="443.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>PMPI_Wait (11 samples, 9.02%)</title><rect x="822.5" y="257" width="106.4" height="15.0" fill="rgb(249,37,45)" rx="2" ry="2" />
+<text text-anchor="" x="825.46" y="267.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >PMPI_Wait</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>HPL_pdgesv0 (35 samples, 28.69%)</title><rect x="638.7" y="449" width="338.5" height="15.0" fill="rgb(218,214,52)" rx="2" ry="2" />
+<text text-anchor="" x="641.69" y="459.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >HPL_pdgesv0</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>simgrid::surf::Model::nextOccuringEvent (3 samples, 2.46%)</title><rect x="522.6" y="433" width="29.0" height="15.0" fill="rgb(253,155,18)" rx="2" ry="2" />
+<text text-anchor="" x="525.62" y="443.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >si..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>[libsimgrid.so.3.16] (1 samples, 0.82%)</title><rect x="77.7" y="545" width="9.7" height="15.0" fill="rgb(231,68,4)" rx="2" ry="2" />
+<text text-anchor="" x="80.70" y="555.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>smpi_trace_set_call_location (1 samples, 0.82%)</title><rect x="928.9" y="273" width="9.6" height="15.0" fill="rgb(252,126,54)" rx="2" ry="2" />
+<text text-anchor="" x="931.85" y="283.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__mmap64 (17 samples, 13.93%)</title><rect x="1006.2" y="433" width="164.5" height="15.0" fill="rgb(231,173,41)" rx="2" ry="2" />
+<text text-anchor="" x="1009.23" y="443.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >__mmap64</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>HPL_pdgesv (35 samples, 28.69%)</title><rect x="638.7" y="465" width="338.5" height="15.0" fill="rgb(253,30,24)" rx="2" ry="2" />
+<text text-anchor="" x="641.69" y="475.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >HPL_pdgesv</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>free (1 samples, 0.82%)</title><rect x="967.5" y="353" width="9.7" height="15.0" fill="rgb(233,180,1)" rx="2" ry="2" />
+<text text-anchor="" x="970.54" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>update_curr_fair (1 samples, 0.82%)</title><rect x="261.5" y="417" width="9.6" height="15.0" fill="rgb(238,32,31)" rx="2" ry="2" />
+<text text-anchor="" x="264.48" y="427.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__rb_insert_augmented (1 samples, 0.82%)</title><rect x="629.0" y="353" width="9.7" height="15.0" fill="rgb(228,224,53)" rx="2" ry="2" />
+<text text-anchor="" x="632.02" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>x86_pmu_enable (1 samples, 0.82%)</title><rect x="861.1" y="97" width="9.7" height="15.0" fill="rgb(225,113,41)" rx="2" ry="2" />
+<text text-anchor="" x="864.15" y="107.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>intel_pmu_enable_all (2 samples, 1.64%)</title><rect x="290.5" y="369" width="19.3" height="15.0" fill="rgb(222,41,17)" rx="2" ry="2" />
+<text text-anchor="" x="293.49" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>setup_new_exec (2 samples, 1.64%)</title><rect x="39.0" y="465" width="19.4" height="15.0" fill="rgb(231,101,24)" rx="2" ry="2" />
+<text text-anchor="" x="42.02" y="475.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_int_realloc (1 samples, 0.82%)</title><rect x="338.9" y="369" width="9.6" height="15.0" fill="rgb(237,104,48)" rx="2" ry="2" />
+<text text-anchor="" x="341.85" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>generic_perform_write (1 samples, 0.82%)</title><rect x="1170.7" y="273" width="9.6" height="15.0" fill="rgb(240,162,24)" rx="2" ry="2" />
+<text text-anchor="" x="1173.66" y="283.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>native_write_msr_safe (1 samples, 0.82%)</title><rect x="1015.9" y="145" width="9.7" height="15.0" fill="rgb(230,199,45)" rx="2" ry="2" />
+<text text-anchor="" x="1018.90" y="155.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>do_sys_open (1 samples, 0.82%)</title><rect x="619.3" y="481" width="9.7" height="15.0" fill="rgb(214,115,18)" rx="2" ry="2" />
+<text text-anchor="" x="622.34" y="491.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+</svg>

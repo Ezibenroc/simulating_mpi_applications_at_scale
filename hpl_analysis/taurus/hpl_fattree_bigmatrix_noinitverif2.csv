@@ -1,0 +1,3 @@
+topology,nb_roots,nb_proc,size,full_time,time,Gflops,total_energy,used_energy,unused_energy,simulation_time,application_time,user_time,system_time,major_page_fault,minor_page_fault,cpu_utilization,uss,rss,page_table_size,memory_size
+file(big_taurus.xml),-1,192,65536,164.954,164.83,1138.0,5090927.276919,538199.258896,4552728.018024,572.797,45.2732,549.22,21.3,6,1403206,0.99,77737984,36235833344,70732000,117772288
+file(big_taurus.xml),-1,3072,65536,61.0884,60.85,3084.0,3227090.572064,3227090.572064,0.0,21105.2,2476.05,20527.04,541.3,0,1893894,0.99,1971183616,53646123008,126924000,1649889280
